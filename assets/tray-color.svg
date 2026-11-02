@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Smash!: 평면 빨강 바탕, 흰 손바닥, 휘두르는 선 두 개 -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#E5452F"/>
+  <g transform="translate(492 552) rotate(-22) scale(1.08)" fill="#FFFFFF">
+    <rect x="-150" y="-228" width="68" height="300" rx="34"/>
+    <rect x="-75" y="-272" width="68" height="340" rx="34"/>
+    <rect x="0" y="-256" width="68" height="330" rx="34"/>
+    <rect x="75" y="-196" width="64" height="270" rx="32"/>
+    <rect x="-36" y="-220" width="72" height="230" rx="36" transform="translate(-118 120) rotate(-40)"/>
+    <path d="M-150 -10 H139 V110 Q139 230 20 230 H-30 Q-150 230 -150 110 Z"/>
+  </g>
+  <g fill="none" stroke="#FFFFFF" stroke-width="32" stroke-linecap="round">
+    <path d="M742 300 Q 790 346 800 410"/>
+    <path d="M790 216 Q 862 280 876 372"/>
+  </g>
+</svg>

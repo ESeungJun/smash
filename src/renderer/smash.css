@@ -1,0 +1,90 @@
+/*
+ * 등짝 스매시 효과. 전체 2초, 내리치는 순간은 0.8초(40%). main.js의 SMASH_MS·SMASH_HIT_MS와 맞춘다.
+ *   0~0.28초  손바닥이 크게 나타난다
+ *   0.28~0.7초 뒤로 젖히며 힘을 모은다
+ *   0.7~0.8초 내리친다 → 0.8초 "찰싹!!" + 번쩍임 + 화면 들썩임
+ *   1.25~2초  손을 들어 올리며 사라진다
+ * 투명 창이라 바탕(사용자 화면)은 그대로 보인다.
+ */
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+.stage {
+  position: fixed; inset: 0;
+  display: grid; place-items: center;
+  animation: shake 0.45s 0.8s both;
+}
+.stage > * { grid-area: 1 / 1; }
+
+/* 아이콘처럼 흰 손바닥에 빨간 테두리. 어떤 바탕화면 위에서도 보이게 그림자를 둔다. */
+.hand {
+  width: min(70vmin, 820px);
+  filter: drop-shadow(0 24px 40px rgb(0 0 0 / 0.35)); /* taste-skill-ignore: 화면 위에 떠 있는 효과 */
+  transform-origin: 50% 100%;
+  animation: hand 2s both;
+}
+.hand .outline { fill: #e5452f; stroke: #e5452f; stroke-width: 44; stroke-linejoin: round; }
+.hand .fill { fill: #ffffff; }
+.word {
+  font: 900 min(16vmin, 190px)/1 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  color: #ffffff;
+  -webkit-text-stroke: min(1.8vmin, 20px) #e5452f;
+  paint-order: stroke fill;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+}
+.kwang { font-size: min(20vmin, 240px); translate: 54vmin -28vmin; animation: kwang 2s both; }
+.flash {
+  position: fixed; inset: 0; background: #ffffff; opacity: 0;
+  animation: flash 2s both;
+}
+.ring {
+  width: 44vmin; height: 44vmin; border-radius: 50%;
+  border: 2.4vmin solid #ffffff; opacity: 0;
+  animation: ring 2s both;
+}
+.ring.late { border-color: #e5452f; animation-delay: 0.06s; }
+
+@keyframes hand {
+  0% { opacity: 0; transform: translateY(30vh) rotate(-6deg) scale(0.4); }
+  10% { opacity: 1; transform: translateY(-6vh) rotate(-12deg) scale(1.06); }
+  14% { transform: translateY(-4vh) rotate(-12deg) scale(1); }
+  35% { transform: translateY(-14vh) rotate(-24deg) scale(0.92); animation-timing-function: cubic-bezier(0.7, 0, 1, 0.6); }
+  40% { transform: translateY(4vh) rotate(-2deg) scale(1.24); }
+  43% { transform: translateY(5vh) rotate(-2deg) scale(1.32, 1.12); }
+  48% { transform: translateY(4vh) rotate(-2deg) scale(1.22); }
+  62% { opacity: 1; transform: translateY(4vh) rotate(-2deg) scale(1.22); }
+  100% { opacity: 0; transform: translateY(-40vh) rotate(-16deg) scale(1.1); }
+}
+@keyframes kwang {
+  0%, 39% { opacity: 0; transform: scale(0.3) rotate(-6deg); }
+  44% { opacity: 1; transform: scale(1.25) rotate(-4deg); }
+  50% { transform: scale(0.95) rotate(-4deg); }
+  56%, 82% { opacity: 1; transform: scale(1) rotate(-4deg); }
+  100% { opacity: 0; transform: scale(1.06) rotate(-4deg); }
+}
+@keyframes flash {
+  0%, 39.5% { opacity: 0; }
+  40.5% { opacity: 0.6; }
+  50%, 100% { opacity: 0; }
+}
+@keyframes ring {
+  0%, 39.5% { opacity: 0; transform: scale(0.2); }
+  41% { opacity: 1; }
+  60%, 100% { opacity: 0; transform: scale(3.4); }
+}
+@keyframes shake {
+  0% { transform: translate(0, 0); }
+  12% { transform: translate(-2.4vmin, 1.8vmin); }
+  26% { transform: translate(2.2vmin, -1.6vmin); }
+  40% { transform: translate(-1.6vmin, -1.2vmin); }
+  56% { transform: translate(1.2vmin, 1vmin); }
+  72% { transform: translate(-0.6vmin, 0.4vmin); }
+  100% { transform: translate(0, 0); }
+}
+
+/* 움직임 줄이기를 켠 사용자에게는 "찰싹!!" 글자만 잠깐 보여 준다. */
+@media (prefers-reduced-motion: reduce) {
+  .stage { animation: none; }
+  .hand, .flash, .ring,   .kwang { translate: 0 0; animation: fade 2s both; }
+  @keyframes fade { 0%, 35% { opacity: 0; } 45%, 80% { opacity: 1; } 100% { opacity: 0; } }
+}

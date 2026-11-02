@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:" />
+    <title>Smash!</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="../../assets/icon-256.png" alt="" width="34" height="34" />
+        <div>
+          <div class="brand-name">Smash!</div>
+          <div class="brand-sub">방 좀 치워라!</div>
+        </div>
+      </div>
+      <div class="side-label">정리할 폴더</div>
+      <nav id="targets" class="targets"></nav>
+      <button id="add-target" class="ghost small">+ 폴더 추가</button>
+      <div class="side-foot">
+        <button class="claude-pill" data-tab="settings">
+          <span id="claude-dot" class="dot"></span><span id="claude-pill-text">Claude 확인 중…</span>
+        </button>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div class="top-title">
+          <div id="target-path" class="target-path"></div>
+          <div id="target-sub" class="target-sub"></div>
+        </div>
+        <div class="top-actions">
+          <button id="scan" class="ghost">다시 보기</button>
+          <button id="apply" class="primary smash" disabled>짝! 정리하기</button>
+        </div>
+      </header>
+
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="preview" role="tab">미리보기</button>
+        <button class="tab" data-tab="rules" role="tab">규칙</button>
+        <button class="tab" data-tab="history" role="tab">기록</button>
+        <button class="tab" data-tab="settings" role="tab">자동 정리 · Claude</button>
+      </div>
+
+      <section id="tab-preview" class="panel active">
+        <div id="plan"></div>
+        <div id="unmatched"></div>
+      </section>
+
+      <section id="tab-rules" class="panel">
+        <div id="rules-top"></div>
+        <div id="rules"></div>
+        <div class="danger-zone">
+          <button id="remove-target" class="ghost small danger">이 폴더를 목록에서 빼기</button>
+        </div>
+      </section>
+
+      <section id="tab-history" class="panel">
+        <div class="panel-head">
+          <p class="hint">옮긴 파일은 되돌릴 수 있어요. 휴지통으로 보낸 파일은 휴지통에서 직접 꺼내야 해요.</p>
+          <button id="undo" class="ghost small">마지막 작업 되돌리기</button>
+        </div>
+        <div id="history"></div>
+      </section>
+
+      <section id="tab-settings" class="panel">
+        <div id="settings"></div>
+      </section>
+    </main>
+
+    <datalist id="folder-list"></datalist>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

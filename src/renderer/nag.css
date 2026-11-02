@@ -1,0 +1,49 @@
+/*
+ * 자동 정리 잔소리 배너. 투명 창 안에 카드 하나. 전체 4.5초:
+ * 0.35초 위에서 내려오며 손바닥이 한 번 철썩 → 3.8초까지 머문다 → 위로 올라가며 사라진다.
+ */
+:root {
+  --surface: #ffffff;
+  --text: #0a0a0a;
+  --muted: #65615b;
+  --accent: #d23c26;
+  --border: #e6e4e0;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --surface: #1f1f1f; --text: #f2f2f2; --muted: #a3a3a3; --accent: #f0634d; --border: #333333; }
+}
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+body { display: grid; place-items: start center; padding: 8px 32px 0; box-sizing: border-box; }
+.banner {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; box-sizing: border-box;
+  padding: 12px 18px 12px 12px;
+  background: var(--surface); color: var(--text); text-decoration: none;
+  border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.22); /* taste-skill-ignore: 화면 위에 떠 있는 알림 */
+  font: 14px/20px -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  cursor: pointer;
+  animation: drop 4.5s both;
+}
+.banner img { flex: none; border-radius: 10px; transform-origin: 70% 80%; animation: slap 0.6s 0.3s both; }
+.text { display: grid; min-width: 0; }
+.title { font-weight: 800; font-size: 16px; line-height: 22px; color: var(--accent); }
+.sub { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.banner:hover .sub { color: var(--text); }
+
+@keyframes drop {
+  0% { opacity: 0; transform: translateY(-120%); }
+  8% { opacity: 1; transform: translateY(6%); }
+  12%, 84% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-120%); }
+}
+@keyframes slap {
+  0% { transform: rotate(0); }
+  30% { transform: rotate(-24deg) scale(1.08); }
+  50% { transform: rotate(10deg) scale(0.94); }
+  70% { transform: rotate(-4deg); }
+  100% { transform: rotate(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .banner, .banner img { animation: none; }
+}
