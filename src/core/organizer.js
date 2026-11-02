@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { expandHome, contractHome, historyPath, writeJsonAtomic, newId } = require('./config');
 const { moveToTrash } = require('./trash');
+const { L } = require('./lang');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HISTORY_LIMIT = 50;
@@ -147,9 +148,9 @@ function makeItem(file, planned, extra) {
 
 function scanTarget(cfg, ref) {
   const target = findTarget(cfg, ref);
-  if (!target) throw new Error(`설정에 없는 폴더입니다: ${ref}`);
+  if (!target) throw new Error(L(`설정에 없는 폴더입니다: ${ref}`, `Not a folder in settings: ${ref}`));
   const root = path.resolve(expandHome(target.path));
-  if (!fs.existsSync(root)) throw new Error(`폴더가 없습니다: ${target.path}`);
+  if (!fs.existsSync(root)) throw new Error(L(`폴더가 없습니다: ${target.path}`, `Folder not found: ${target.path}`));
   const skip = makeSkipper(cfg);
   const reserved = new Set();
   const now = Date.now();
@@ -163,7 +164,7 @@ function scanTarget(cfg, ref) {
     }
     const planned =
       rule.action === 'trash' ? { action: 'trash', dest: '', note: null } : planMove(file.path, resolveDestDir(root, rule.dest), reserved);
-    if (planned) items.push(makeItem(file, planned, { ruleId: rule.id, reason: `규칙: ${rule.name}` }));
+    if (planned) items.push(makeItem(file, planned, { ruleId: rule.id, reason: rule.name }));
   }
   return { targetId: target.id, root, items, unmatched };
 }
@@ -171,7 +172,7 @@ function scanTarget(cfg, ref) {
 // 규칙 편집 중 미리보기: 이 규칙 하나에 지금 맞는 파일들.
 function testRule(cfg, ref, rule) {
   const target = findTarget(cfg, ref);
-  if (!target) throw new Error(`설정에 없는 폴더입니다: ${ref}`);
+  if (!target) throw new Error(L(`설정에 없는 폴더입니다: ${ref}`, `Not a folder in settings: ${ref}`));
   const root = path.resolve(expandHome(target.path));
   const candidate = { enabled: true, ...rule, match: { extensions: [], nameIncludes: [], olderThanDays: 0, ...(rule.match || {}) } };
   const now = Date.now();
@@ -198,10 +199,10 @@ function planFromMoves(cfg, moves) {
   for (const m of moves) {
     const src = path.resolve(expandHome(String(m.src || '')));
     const fail = (why) => rejected.push({ src: m.src, reason: why });
-    if (!insideAnyRoot(cfg, src)) { fail('설정한 정리 대상 폴더 밖의 파일입니다'); continue; }
+    if (!insideAnyRoot(cfg, src)) { fail(L('설정한 정리 대상 폴더 밖의 파일입니다', 'The file is outside the folders you set up')); continue; }
     let st;
-    try { st = fs.lstatSync(src); } catch { fail('파일이 없습니다'); continue; }
-    if (!st.isFile()) { fail('파일만 옮길 수 있습니다'); continue; }
+    try { st = fs.lstatSync(src); } catch { fail(L('파일이 없습니다', 'File not found')); continue; }
+    if (!st.isFile()) { fail(L('파일만 옮길 수 있습니다', 'Only files can be moved')); continue; }
     const file = { name: path.basename(src), path: src, size: st.size, mtimeMs: st.mtimeMs };
     const reason = String(m.reason || '');
     if (m.action === 'trash') {
@@ -209,9 +210,9 @@ function planFromMoves(cfg, moves) {
       continue;
     }
     const destDir = resolveDestDir(path.dirname(src), m.destFolder ?? m.dest_folder ?? m.dest);
-    if (!insideAnyRoot(cfg, destDir)) { fail('목적지가 정리 대상 폴더 밖입니다'); continue; }
+    if (!insideAnyRoot(cfg, destDir)) { fail(L('목적지가 정리 대상 폴더 밖입니다', 'The destination is outside the folders you set up')); continue; }
     const planned = planMove(src, destDir, reserved);
-    if (!planned) { fail('이미 그 폴더에 있습니다'); continue; }
+    if (!planned) { fail(L('이미 그 폴더에 있습니다', 'Already in that folder')); continue; }
     items.push(makeItem(file, planned, { ruleId: null, reason }));
   }
   return { items, rejected };
@@ -250,8 +251,8 @@ function applyPlan(cfg, items, source = 'app') {
     const src = path.resolve(String(item.src || ''));
     const done = (ok, message) => results.push({ id: item.id, name: path.basename(src), ok, message });
     try {
-      if (!insideAnyRoot(cfg, src)) throw new Error('정리 대상 폴더 밖의 파일입니다');
-      if (!fs.lstatSync(src).isFile()) throw new Error('파일이 아닙니다');
+      if (!insideAnyRoot(cfg, src)) throw new Error(L('정리 대상 폴더 밖의 파일입니다', 'The file is outside the folders you set up'));
+      if (!fs.lstatSync(src).isFile()) throw new Error(L('파일이 아닙니다', 'Not a file'));
       // 중복이라 버리기로 한 파일은 원본이 아직 그대로 있을 때만 버린다. 아니면 원본 자리로 옮긴다.
       if (item.action === 'trash' && item.duplicateOf) {
         const original = path.resolve(String(item.duplicateOf));
@@ -261,18 +262,18 @@ function applyPlan(cfg, items, source = 'app') {
       if (item.action === 'trash') {
         moveToTrash(src);
         ops.push({ type: 'trash', from: src });
-        done(true, '휴지통으로 보냄');
+        done(true, L('휴지통으로 보냄', 'Moved to Trash'));
         continue;
       }
       const wanted = path.resolve(String(item.dest || ''));
-      if (!insideAnyRoot(cfg, wanted)) throw new Error('목적지가 정리 대상 폴더 밖입니다');
+      if (!insideAnyRoot(cfg, wanted)) throw new Error(L('목적지가 정리 대상 폴더 밖입니다', 'The destination is outside the folders you set up'));
       // 계획 이후에 상황이 바뀌었을 수 있어 실행 직전에 다시 확인한다.
       const planned = planMove(src, path.dirname(wanted), reserved);
-      if (!planned) throw new Error('이미 그 폴더에 있습니다');
+      if (!planned) throw new Error(L('이미 그 폴더에 있습니다', 'Already in that folder'));
       if (planned.action === 'trash') {
         moveToTrash(src);
         ops.push({ type: 'trash', from: src });
-        done(true, '같은 파일이 이미 있어 휴지통으로 보냄');
+        done(true, L('같은 파일이 이미 있어 휴지통으로 보냄', 'Same file already there, moved to Trash'));
         continue;
       }
       const to = planned.dest;
@@ -294,14 +295,14 @@ function applyPlan(cfg, items, source = 'app') {
 function undoLast() {
   const runs = loadHistory();
   const run = [...runs].reverse().find((r) => !r.undone);
-  if (!run) return { ok: false, message: '되돌릴 작업이 없습니다', restored: 0, failed: [], trashed: [] };
+  if (!run) return { ok: false, message: L('되돌릴 작업이 없습니다', 'Nothing to undo'), restored: 0, failed: [], trashed: [] };
   let restored = 0;
   const failed = [];
   for (const op of [...run.ops].reverse()) {
     if (op.type !== 'move') continue;
     try {
-      if (!fs.existsSync(op.to)) throw new Error('옮긴 파일이 없습니다');
-      if (fs.existsSync(op.from)) throw new Error('원래 자리에 같은 이름 파일이 있습니다');
+      if (!fs.existsSync(op.to)) throw new Error(L('옮긴 파일이 없습니다', 'The moved file is gone'));
+      if (fs.existsSync(op.from)) throw new Error(L('원래 자리에 같은 이름 파일이 있습니다', 'A file with the same name is in the original place'));
       moveFile(op.to, op.from);
       restored += 1;
     } catch (err) {

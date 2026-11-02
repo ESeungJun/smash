@@ -3,6 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { L } = require('./lang');
 
 const APP_DIR_NAME = 'Smash';
 
@@ -31,17 +32,20 @@ function contractHome(p) {
   return p;
 }
 
-// 규칙 화면의 '파일 종류' 칩. 기본 규칙도 이걸로 만든다.
+// 규칙 화면의 '파일 종류' 칩. 기본 규칙도 이걸로 만든다. 이름과 폴더는 언어마다 다르다(localCategories).
 const CATEGORIES = [
-  { key: 'image', label: '사진·이미지', folder: '사진·이미지', extensions: ['jpg', 'jpeg', 'png', 'gif', 'heic', 'webp', 'tiff', 'bmp', 'svg'] },
-  { key: 'video', label: '동영상', folder: '미디어', extensions: ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'] },
-  { key: 'audio', label: '음악·녹음', folder: '미디어', extensions: ['mp3', 'm4a', 'wav', 'flac', 'aac', 'ogg'] },
-  { key: 'doc', label: '문서', folder: '자료', extensions: ['pdf', 'hwp', 'hwpx', 'doc', 'docx', 'txt', 'md', 'rtf', 'pages', 'html'] },
-  { key: 'sheet', label: '표·슬라이드', folder: '자료', extensions: ['xls', 'xlsx', 'csv', 'numbers', 'ppt', 'pptx', 'key'] },
-  { key: 'archive', label: '압축 파일', folder: '자료', extensions: ['zip', '7z', 'rar', 'tar', 'gz'] },
-  { key: 'installer', label: '설치 파일', folder: '', extensions: ['dmg', 'pkg', 'exe', 'msi'] },
-  { key: 'dev', label: '폰트·개발', folder: '개발리소스', extensions: ['ttf', 'otf', 'woff', 'woff2', 'json', 'yaml', 'yml', 'log', 'xml'] },
+  { key: 'image', label: '사진·이미지', labelEn: 'Images', folder: '사진·이미지', folderEn: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'heic', 'webp', 'tiff', 'bmp', 'svg'] },
+  { key: 'video', label: '동영상', labelEn: 'Video', folder: '미디어', folderEn: 'Media', extensions: ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'] },
+  { key: 'audio', label: '음악·녹음', labelEn: 'Audio', folder: '미디어', folderEn: 'Media', extensions: ['mp3', 'm4a', 'wav', 'flac', 'aac', 'ogg'] },
+  { key: 'doc', label: '문서', labelEn: 'Documents', folder: '자료', folderEn: 'Files', extensions: ['pdf', 'hwp', 'hwpx', 'doc', 'docx', 'txt', 'md', 'rtf', 'pages', 'html'] },
+  { key: 'sheet', label: '표·슬라이드', labelEn: 'Sheets & slides', folder: '자료', folderEn: 'Files', extensions: ['xls', 'xlsx', 'csv', 'numbers', 'ppt', 'pptx', 'key'] },
+  { key: 'archive', label: '압축 파일', labelEn: 'Archives', folder: '자료', folderEn: 'Files', extensions: ['zip', '7z', 'rar', 'tar', 'gz'] },
+  { key: 'installer', label: '설치 파일', labelEn: 'Installers', folder: '', folderEn: '', extensions: ['dmg', 'pkg', 'exe', 'msi'] },
+  { key: 'dev', label: '폰트·개발', labelEn: 'Fonts & dev', folder: '개발리소스', folderEn: 'Dev Resources', extensions: ['ttf', 'otf', 'woff', 'woff2', 'json', 'yaml', 'yml', 'log', 'xml'] },
 ];
+
+const localCategories = () =>
+  CATEGORIES.map(({ labelEn, folderEn, ...c }) => ({ ...c, label: L(c.label, labelEn), folder: L(c.folder, folderEn) }));
 
 let idSeq = 0;
 function newId(prefix) {
@@ -62,15 +66,15 @@ function rule(name, extensions, dest, extra = {}) {
 
 // 문서 폴더를 기준으로 정리한다. 다운로드에 들어온 파일도 문서 폴더의 같은 분류로 보낸다.
 function categoryRules(destBase) {
-  const cat = (key) => CATEGORIES.find((c) => c.key === key);
+  const cat = (key) => localCategories().find((c) => c.key === key);
   const media = [...cat('video').extensions, ...cat('audio').extensions];
   const docs = [...cat('doc').extensions, ...cat('sheet').extensions, ...cat('archive').extensions];
   const to = (folder) => (destBase ? `${destBase}/${folder}` : folder);
   return [
-    rule('사진·이미지', cat('image').extensions, to('사진·이미지')),
-    rule('동영상·음악·녹음', media, to('미디어')),
-    rule('문서·표·압축 파일', docs, to('자료')),
-    rule('폰트·개발 리소스', cat('dev').extensions, to('개발리소스')),
+    rule(L('사진·이미지', 'Images'), cat('image').extensions, to(cat('image').folder)),
+    rule(L('동영상·음악·녹음', 'Video & audio'), media, to(cat('video').folder)),
+    rule(L('문서·표·압축 파일', 'Documents, sheets & archives'), docs, to(cat('doc').folder)),
+    rule(L('폰트·개발 리소스', 'Fonts & dev resources'), cat('dev').extensions, to(cat('dev').folder)),
   ];
 }
 
@@ -83,7 +87,7 @@ function defaultConfig() {
         path: '~/Downloads',
         auto: false,
         rules: [
-          rule('오래된 설치 파일', CATEGORIES.find((c) => c.key === 'installer').extensions, '', { action: 'trash', match: { olderThanDays: 7 } }),
+          rule(L('오래된 설치 파일', 'Old installers'), CATEGORIES.find((c) => c.key === 'installer').extensions, '', { action: 'trash', match: { olderThanDays: 7 } }),
           ...categoryRules('~/Documents'),
         ],
       },
@@ -94,7 +98,7 @@ function defaultConfig() {
       patterns: ['.localized', 'desktop.ini', 'Thumbs.db', '*.crdownload', '*.download', '*.part', '*.tmp', '.정리기록*'],
     },
     ai: { model: 'sonnet' },
-    settings: { autoDelaySec: 10, notify: true, openAtLogin: false, smash: true, openAfter: true },
+    settings: { autoDelaySec: 10, notify: true, openAtLogin: false, smash: true, openAfter: true, language: 'system' },
   };
 }
 
@@ -107,13 +111,14 @@ function normalize(cfg) {
   out.settings.autoDelaySec = Math.min(3600, Math.max(3, Number(out.settings.autoDelaySec) || base.settings.autoDelaySec));
   out.settings.smash = out.settings.smash !== false;
   out.settings.openAfter = out.settings.openAfter !== false;
+  if (!['system', 'ko', 'en'].includes(out.settings.language)) out.settings.language = 'system';
   out.targets = (Array.isArray(cfg.targets) ? cfg.targets : base.targets).map((t) => ({
     id: t.id || newId('t'),
     path: String(t.path || ''),
     auto: t.auto === true,
     rules: (Array.isArray(t.rules) ? t.rules : []).map((r) => ({
       id: r.id || newId('r'),
-      name: String(r.name || '이름 없는 규칙'),
+      name: String(r.name || L('이름 없는 규칙', 'Untitled rule')),
       enabled: r.enabled !== false,
       match: {
         extensions: (r.match?.extensions || []).map((e) => String(e).toLowerCase().replace(/^\./, '')).filter(Boolean),
@@ -152,6 +157,7 @@ function saveConfig(cfg) {
 
 module.exports = {
   CATEGORIES,
+  localCategories,
   configDir,
   configPath,
   historyPath,

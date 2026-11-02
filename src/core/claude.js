@@ -8,6 +8,7 @@ const path = require('path');
 const { spawn, execFileSync } = require('child_process');
 const { contractHome, expandHome, writeJsonAtomic } = require('./config');
 const { folderTree, planFromMoves } = require('./organizer');
+const { L } = require('./lang');
 
 const MCP_NAME = 'smash';
 // 예전 이름으로 등록된 서버는 다시 등록할 때 지운다.
@@ -76,7 +77,7 @@ function findClaudeCli() {
 
 function runCli(args, { input, timeoutMs = 30_000, configDir } = {}) {
   const cli = findClaudeCli();
-  if (!cli) return Promise.reject(new Error('Claude Code CLI를 찾지 못했습니다. claude.com/claude-code 에서 설치 후 로그인해 주세요.'));
+  if (!cli) return Promise.reject(new Error(L('Claude Code CLI를 찾지 못했습니다. claude.com/claude-code 에서 설치 후 로그인해 주세요.', 'Claude Code CLI not found. Install it from claude.com/claude-code and sign in.')));
   // npm으로 설치한 Windows의 claude.cmd는 셸을 거쳐야 실행된다.
   const viaShell = /\.cmd$/i.test(cli);
   const quote = (a) => (a === '' || /[\s"&|<>^%]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a);
@@ -91,7 +92,7 @@ function runCli(args, { input, timeoutMs = 30_000, configDir } = {}) {
     let stderr = '';
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error('Claude 응답 시간이 초과됐습니다'));
+      reject(new Error(L('Claude 응답 시간이 초과됐습니다', 'Claude took too long to answer')));
     }, timeoutMs);
     child.stdout.on('data', (d) => (stdout += d));
     child.stderr.on('data', (d) => (stderr += d));
@@ -102,7 +103,7 @@ function runCli(args, { input, timeoutMs = 30_000, configDir } = {}) {
     child.on('close', (code) => {
       clearTimeout(timer);
       if (code === 0) resolve(stdout);
-      else reject(new Error((stderr || stdout).trim().slice(0, 500) || `claude 종료 코드 ${code}`));
+      else reject(new Error((stderr || stdout).trim().slice(0, 500) || L(`claude 종료 코드 ${code}`, `claude exited with code ${code}`)));
     });
     // 입력이 없어도 stdin을 닫아야 CLI가 입력을 기다리지 않는다.
     child.stdin.end(input ?? undefined);
@@ -129,7 +130,7 @@ function buildPrompt(targetRoot, files, folders) {
     '- dest에는 "폴더 목록"에 있는 경로를 그대로 쓴다. 꼭 필요할 때만 정리 대상 폴더 바로 아래 새 폴더를 만든다(예: ~/Downloads/새폴더).',
     '- 어디가 맞는지 확신이 없으면 dest를 null로 둔다.',
     '- 삭제는 제안하지 않는다.',
-    '- reason은 한국어로 30자 이내.',
+    L('- reason은 한국어로 30자 이내.', '- reason은 영어로 40자 이내.'),
     '- file에는 파일 이름을 그대로 쓴다.',
     '',
     `지금 정리하는 폴더: ${contractHome(targetRoot)}`,
@@ -146,12 +147,12 @@ function buildPrompt(targetRoot, files, folders) {
 
 function parseSuggestions(stdout) {
   const outer = JSON.parse(stdout);
-  if (outer.is_error) throw new Error(String(outer.result || 'Claude 오류'));
+  if (outer.is_error) throw new Error(String(outer.result || L('Claude 오류', 'Claude error')));
   if (outer.structured_output?.suggestions) return outer.structured_output.suggestions;
   const text = String(outer.result || '');
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
-  if (start < 0 || end < start) throw new Error('Claude 응답을 해석하지 못했습니다');
+  if (start < 0 || end < start) throw new Error(L('Claude 응답을 해석하지 못했습니다', 'Could not read Claude\'s answer'));
   return JSON.parse(text.slice(start, end + 1)).suggestions || [];
 }
 
@@ -203,7 +204,7 @@ async function ruleFromText(cfg, targetRoot, text) {
     '- olderThanDays: "일주일 지난" 같은 조건이 있으면 일 수, 없으면 0.',
     '- action: 옮기면 move, 지우라고 하면 trash(실제로는 휴지통으로 간다).',
     '- dest: move일 때 목적지. 아래 폴더 목록에 맞는 게 있으면 그 경로(~ 경로)를 그대로 쓰고, 없으면 정리 대상 폴더 기준 상대 경로로 새 폴더 이름을 쓴다. trash면 빈 문자열.',
-    '- name: 한국어 규칙 이름, 15자 이내.',
+    L('- name: 한국어 규칙 이름, 15자 이내.', '- name: 영어 규칙 이름, 30자 이내.'),
     '',
     '폴더 목록:',
     ...folders.map((f) => `- ${f}`),
@@ -214,14 +215,14 @@ async function ruleFromText(cfg, targetRoot, text) {
   if (cfg.ai?.model) args.push('--model', cfg.ai.model);
   if (!/\.cmd$/i.test(findClaudeCli() || '')) args.push('--json-schema', JSON.stringify(RULE_SCHEMA));
   const outer = JSON.parse(await runCli(args, { input: prompt, timeoutMs: SUGGEST_TIMEOUT_MS }));
-  if (outer.is_error) throw new Error(String(outer.result || 'Claude 오류'));
+  if (outer.is_error) throw new Error(String(outer.result || L('Claude 오류', 'Claude error')));
   let rule = outer.structured_output;
   if (!rule) {
     const t = String(outer.result || '');
     rule = JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1));
   }
   return {
-    name: String(rule.name || '새 규칙'),
+    name: String(rule.name || L('새 규칙', 'New rule')),
     match: {
       extensions: (rule.extensions || []).map((e) => String(e).toLowerCase().replace(/^\./, '')).filter(Boolean),
       nameIncludes: (rule.nameIncludes || []).map(String).filter(Boolean),
@@ -237,7 +238,7 @@ async function ruleFromText(cfg, targetRoot, text) {
 // Claude Code 설정 위치들. 기본(~/.claude.json) + CLAUDE_CONFIG_DIR + Orca 앱 프로필.
 function claudeConfigLocations() {
   const home = os.homedir();
-  const locations = [{ id: 'default', label: '기본 (~/.claude.json)', dir: null, file: path.join(home, '.claude.json') }];
+  const locations = [{ id: 'default', label: L('기본 (~/.claude.json)', 'Default (~/.claude.json)'), dir: null, file: path.join(home, '.claude.json') }];
   const add = (dir, label) => {
     const resolved = path.resolve(dir);
     if (locations.some((l) => l.dir === resolved)) return;
@@ -259,7 +260,7 @@ function claudeConfigLocations() {
   for (const d of profiles) {
     const dir = path.join(orca, d.name, 'home');
     if (!fs.existsSync(path.join(dir, '.claude.json'))) continue;
-    add(dir, `Orca 프로필 ${d.name.slice(0, 8)}${path.resolve(selected) === path.resolve(dir) ? ' (사용 중)' : ''}`);
+    add(dir, L(`Orca 프로필 ${d.name.slice(0, 8)}`, `Orca profile ${d.name.slice(0, 8)}`) + (path.resolve(selected) === path.resolve(dir) ? L(' (사용 중)', ' (in use)') : ''));
   }
   if (process.env.CLAUDE_CONFIG_DIR) add(process.env.CLAUDE_CONFIG_DIR, `CLAUDE_CONFIG_DIR (${contractHome(process.env.CLAUDE_CONFIG_DIR)})`);
   return locations;
