@@ -14,7 +14,8 @@ Press tidy and a giant palm comes down on your screen. "찰싹!!" Everything is 
 
 <p align="center"><b>English</b> · <a href="README.ko.md">한국어</a></p>
 
-<p align="center"><img src="docs/images/hero.png" width="100%" alt="Smash!: a tree preview of how Downloads will be sorted into Documents, with new folders marked"></p>
+<p align="center"><a href="docs/video/smash.mp4"><img src="docs/images/smash.gif" width="100%" alt="Smash!: pressing tidy brings a giant palm down on the screen with a '찰싹!!', and the Downloads list is empty afterwards"></a><br>
+<sub>▶ <a href="docs/video/smash.mp4">Watch the full-quality video (MP4, 4s)</a></sub></p>
 
 ---
 
@@ -32,6 +33,8 @@ and works with the Claude you already have signed in on your computer, with no A
 3. Uncheck anything you want to leave alone and press **짝! 정리하기**.
 4. The palm slaps, the files move, and the folder they went to opens.
 
+<p align="center"><img src="docs/images/hero.png" width="100%" alt="Smash!: a tree preview of how Downloads will be sorted into Documents, with new folders marked"></p>
+
 ## Features
 
 - **Rules you can read** — pick file kinds (images, video, documents, archives, installers…) or type extensions,
@@ -41,7 +44,9 @@ and works with the Claude you already have signed in on your computer, with no A
 - **Documents-first defaults** — Downloads is sorted into `Documents/사진·이미지`, `미디어`, `자료` and `개발리소스` out of the box.
 - **Auto-tidy** — turn it on for a folder and new files are sorted once they finish downloading
   (the size has to stay the same twice). It keeps watching from the menu bar (notification area on Windows) after you close the window.
-  When it's done, a banner drops in at the top of the screen: "으이구!! 폴더 청소 좀 하랬지!!" Click it to open the folder.
+  When it's done, a banner drops in at the top of the screen: "으이구!! 폴더 청소 좀 하랬지!!" (roughly "Ugh!! Didn't I tell you to clean your folders!!"). Click it to open the folder.
+
+  <img src="docs/images/nag.png" width="100%" alt="Auto-tidy banner at the top of the screen: 으이구!! 폴더 청소 좀 하랬지!! with how many files were tidied">
 - **The smash** — a transparent full-screen overlay: the palm appears, winds up and slaps, the screen shakes and the app window jolts.
   Mouse clicks pass through. Turn the effect or the folder opening off in settings.
 - **Safe by design**
