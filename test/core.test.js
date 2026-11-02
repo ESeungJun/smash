@@ -14,6 +14,11 @@ const { saveConfig, loadConfig } = require('../src/core/config');
 const { matchRule, scanTarget, applyPlan, undoLast, planFromMoves, loadHistory, testRule, missingDirs } = require('../src/core/organizer');
 const { AutoTidy } = require('../src/core/watcher');
 const { parseSuggestions, buildPrompt } = require('../src/core/claude');
+const { setLang, resolveLang, L } = require('../src/core/lang');
+const { defaultConfig } = require('../src/core/config');
+
+// 문구를 비교하는 테스트가 OS 언어에 따라 달라지지 않게 한국어로 고정한다.
+setLang('ko');
 
 const inbox = path.join(sandbox, 'inbox');
 const archive = path.join(sandbox, 'archive');
@@ -252,3 +257,27 @@ test('AutoTidy: 다 받아진 파일만 자동으로 정리한다', async () => 
 });
 
 test.after(() => fs.rmSync(sandbox, { recursive: true, force: true }));
+
+test('언어: 설정값이 ko·en이면 그대로, system이면 OS 언어로 정한다', () => {
+  assert.equal(resolveLang('en', 'ko-KR'), 'en');
+  assert.equal(resolveLang('ko', 'en-US'), 'ko');
+  assert.equal(resolveLang('system', 'ko-KR'), 'ko');
+  assert.equal(resolveLang('system', 'en-GB'), 'en');
+  assert.equal(resolveLang(undefined, 'ja-JP'), 'en');
+});
+
+test('언어: 영어면 기본 규칙의 폴더·이름과 오류 문구도 영어다', () => {
+  setLang('en');
+  try {
+    const cfg = defaultConfig();
+    const dests = cfg.targets[0].rules.map((r) => r.dest).filter(Boolean);
+    assert.ok(dests.includes('~/Documents/Images'));
+    assert.ok(dests.includes('~/Documents/Files'));
+    assert.equal(cfg.targets[0].rules[0].name, 'Old installers');
+    assert.equal(cfg.settings.language, 'system');
+    assert.equal(L('한국어', 'English'), 'English');
+  } finally {
+    setLang('ko');
+  }
+  assert.ok(defaultConfig().targets[0].rules.some((r) => r.dest === '~/Documents/사진·이미지'));
+});

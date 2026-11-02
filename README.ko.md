@@ -89,6 +89,8 @@ xattr -dr com.apple.quarantine /Applications/Smash.app
 코드 서명 전이라 SmartScreen 경고가 뜨면 **추가 정보 → 실행**을 누른다.
 Windows 10 이상. 실제 윈도우 기기에서는 아직 테스트하지 않았다.
 
+화면은 한국어와 영어를 지원한다. 처음에는 시스템 언어를 따르고, **자동 정리 · Claude → 언어 · Language**에서 바꿀 수 있다.
+
 ## 만든 재료
 
 - **Electron**, 프레임워크 없는 순수 CommonJS. 스매시 효과와 배너는 포커스를 가져가지 않는 투명 `BrowserWindow`다.

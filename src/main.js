@@ -3,10 +3,11 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, Notification, nativeImage, nativeTheme, screen } = require('electron');
-const { loadConfig, saveConfig, configPath, contractHome, expandHome, CATEGORIES } = require('./core/config');
+const { loadConfig, saveConfig, configPath, contractHome, expandHome, localCategories } = require('./core/config');
 const { scanTarget, applyPlan, undoLast, loadHistory, findTarget, testRule, missingDirs, folderTree } = require('./core/organizer');
 const { suggestPlacements, integrationStatus, registerClaudeCode, registerClaudeDesktop, ruleFromText, MCP_NAME } = require('./core/claude');
 const { AutoTidy } = require('./core/watcher');
+const { L, getLang, setLang, resolveLang } = require('./core/lang');
 
 const APP_NAME = 'Smash!';
 app.setName(APP_NAME);
@@ -49,16 +50,21 @@ const auto = new AutoTidy({
     updateTray();
     if (!ok.length || !loadConfig().settings.notify) return;
     const names = ok.slice(0, 2).map((r) => r.name).join(', ');
-    const more = ok.length > 2 ? ` 외 ${ok.length - 2}개` : '';
+    const more = ok.length > 2 ? L(` 외 ${ok.length - 2}개`, ` and ${ok.length - 2} more`) : '';
     const folder = tidiedFolder(loadConfig(), result.run?.ops || []) || target.root;
-    showNag(`${path.basename(target.root)}에서 ${ok.length}개 치웠어요 · ${names}${more}`, folder);
+    const where = path.basename(target.root);
+    showNag(L(`${where}에서 ${ok.length}개 치웠어요 · ${names}${more}`, `Tidied ${ok.length} in ${where} · ${names}${more}`), folder);
   },
   onError(target, err) {
     console.error(`[auto] ${target.root}: ${err.message}`);
   },
 });
 
+// 설정의 언어(system이면 OS 언어)를 main 쪽 문구에 적용한다. 화면에는 config:get으로 넘긴다.
+const syncLang = (cfg) => setLang(resolveLang(cfg.settings.language, app.getLocale()));
+
 function applySettings(cfg) {
+  syncLang(cfg);
   auto.sync(cfg);
   // 값이 바뀔 때만 건드린다. 매번 부르면 서명 안 된 빌드에서 권한 오류가 로그에 쌓인다.
   if (app.isPackaged && process.platform !== 'linux' && app.getLoginItemSettings().openAtLogin !== cfg.settings.openAtLogin) {
@@ -119,13 +125,13 @@ function updateTray() {
   if (!tray) return;
   const cfg = loadConfig();
   const autoOn = anyAuto(cfg);
-  tray.setToolTip(autoOn ? `${APP_NAME} — 자동 정리 중` : APP_NAME);
+  tray.setToolTip(autoOn ? `${APP_NAME} — ${L('자동 정리 중', 'auto-tidy on')}` : APP_NAME);
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: `${APP_NAME} 열기`, click: () => showWindow() },
+      { label: L(`${APP_NAME} 열기`, `Open ${APP_NAME}`), click: () => showWindow() },
       { type: 'separator' },
       ...cfg.targets.map((t) => ({
-        label: `${path.basename(expandHome(t.path))} 자동 정리`,
+        label: L(`${path.basename(expandHome(t.path))} 자동 정리`, `Auto-tidy ${path.basename(expandHome(t.path))}`),
         type: 'checkbox',
         checked: t.auto,
         click: (item) => {
@@ -136,9 +142,9 @@ function updateTray() {
           win?.webContents.send('config:changed');
         },
       })),
-      { label: '지금 전부 정리하기', click: () => tidyAllNow() },
+      { label: L('지금 전부 정리하기', 'Tidy everything now'), click: () => tidyAllNow() },
       { type: 'separator' },
-      { label: '종료', click: () => app.quit() },
+      { label: L('종료', 'Quit'), click: () => app.quit() },
     ]),
   );
 }
@@ -210,7 +216,7 @@ function smashEffect() {
     hitDone();
     closeDone();
   });
-  w.loadFile(path.join(__dirname, 'renderer', 'smash.html'));
+  w.loadFile(path.join(__dirname, 'renderer', 'smash.html'), { query: { lang: getLang() } });
   return { hit, done };
 }
 
@@ -303,7 +309,7 @@ function showNag(sub, folder) {
     clearTimeout(timer);
     if (nagWin === w) nagWin = null;
   });
-  w.loadFile(path.join(__dirname, 'renderer', 'nag.html'), { query: { sub } });
+  w.loadFile(path.join(__dirname, 'renderer', 'nag.html'), { query: { sub, lang: getLang() } });
 }
 
 async function tidyAllNow() {
@@ -322,7 +328,7 @@ async function tidyAllNow() {
     return { run: ops.length ? { ops } : null };
   });
   win?.webContents.send('auto:ran', { count: total });
-  if (Notification.isSupported()) new Notification({ title: total ? `찰싹!! ${total}개 치웠어요` : '치울 게 없네요. 깨끗해요!', silent: true }).show();
+  if (Notification.isSupported()) new Notification({ title: total ? L(`찰싹!! ${total}개 치웠어요`, `SMACK!! Tidied ${total} files`) : L('치울 게 없네요. 깨끗해요!', 'Nothing to tidy. All clean!'), silent: true }).show();
 }
 
 // 개발용: 화면을 PNG로 저장하고 종료한다. SMASH_CAPTURE=저장경로 [SMASH_CAPTURE_JS=실행할 스크립트]
@@ -359,7 +365,8 @@ handle('config:get', () => ({
   configPath: label(configPath()),
   home: os.homedir(),
   sep: path.sep,
-  categories: CATEGORIES,
+  categories: localCategories(),
+  lang: getLang(),
   platform: process.platform,
 }));
 handle('config:save', (cfg) => {
@@ -377,7 +384,7 @@ handle('rule:test', (targetId, rule) => testRule(loadConfig(), targetId, rule));
 handle('rule:fromText', (targetId, text) => {
   const cfg = loadConfig();
   const target = findTarget(cfg, targetId);
-  if (!target) throw new Error('폴더를 찾을 수 없습니다');
+  if (!target) throw new Error(L('폴더를 찾을 수 없습니다', 'Folder not found'));
   return ruleFromText(cfg, path.resolve(expandHome(target.path)), String(text).slice(0, 500));
 });
 
@@ -392,7 +399,7 @@ handle('history', () =>
 handle('ai:suggest', async (targetId, unmatched) => {
   const cfg = loadConfig();
   const target = findTarget(cfg, targetId);
-  if (!target) throw new Error('폴더를 찾을 수 없습니다');
+  if (!target) throw new Error(L('폴더를 찾을 수 없습니다', 'Folder not found'));
   const res = await suggestPlacements(cfg, path.resolve(expandHome(target.path)), unmatched);
   return { ...res, items: decorate(res.items) };
 });
@@ -417,6 +424,9 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => showWindow());
   app.whenReady().then(() => {
+    // 처음 실행이면 기본 설정(폴더·규칙 이름)도 이 언어로 만들어진다.
+    syncLang({ settings: {} });
+    syncLang(loadConfig());
     const startHidden = process.argv.includes('--hidden') || app.getLoginItemSettings().wasOpenedAsHidden;
     createTray();
     createWindow({ show: !startHidden });

@@ -33,6 +33,7 @@ html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
   pointer-events: none;
 }
 .kwang { font-size: min(20vmin, 240px); translate: 54vmin -28vmin; animation: kwang 2s both; }
+.kwang.en { font-size: min(11vmin, 140px); translate: 44vmin -38vmin; }
 .flash {
   position: fixed; inset: 0; background: #ffffff; opacity: 0;
   animation: flash 2s both;

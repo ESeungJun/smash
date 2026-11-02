@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { L } = require('./lang');
 
 // NSFileManager를 직접 불러서 Finder 자동화 권한 없이 휴지통으로 보낸다.
 const MAC_SCRIPT =
@@ -31,7 +32,7 @@ function trashLinux(file) {
 function moveToTrash(file) {
   if (process.platform === 'darwin') {
     const out = execFileSync('osascript', ['-l', 'JavaScript', '-e', MAC_SCRIPT, file], { encoding: 'utf8' }).trim();
-    if (out !== 'true' || fs.existsSync(file)) throw new Error('휴지통으로 옮기지 못했습니다');
+    if (out !== 'true' || fs.existsSync(file)) throw new Error(L('휴지통으로 옮기지 못했습니다', 'Could not move to Trash'));
     return;
   }
   if (process.platform === 'win32') {
@@ -39,7 +40,7 @@ function moveToTrash(file) {
       env: { ...process.env, SMASH_TRASH: file },
       windowsHide: true,
     });
-    if (fs.existsSync(file)) throw new Error('휴지통으로 옮기지 못했습니다');
+    if (fs.existsSync(file)) throw new Error(L('휴지통으로 옮기지 못했습니다', 'Could not move to Trash'));
     return;
   }
   trashLinux(file);

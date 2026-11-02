@@ -6,6 +6,10 @@ const path = require('path');
 const readline = require('readline');
 const { loadConfig, saveConfig, contractHome, newId } = require('../core/config');
 const { scanTarget, planFromMoves, applyPlan, undoLast, loadHistory, folderTree, findTarget } = require('../core/organizer');
+const { setLang, resolveLang } = require('../core/lang');
+
+// 앱에서 고른 언어로 오류·결과 문구를 돌려준다.
+setLang(resolveLang(loadConfig().settings.language));
 
 // 패키징하면 이 파일은 app.asar.unpacked에 있어 package.json을 못 읽을 수 있다.
 function appVersion() {

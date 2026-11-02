@@ -91,7 +91,7 @@ Run [`Smash-Windows-x64-Setup.exe`](https://github.com/ESeungJun/smash/releases/
 It isn't code-signed yet, so if SmartScreen warns you, click **More info → Run anyway**.
 Windows 10 or later. Not tested on a real Windows machine yet.
 
-The interface is in Korean.
+The app speaks English and Korean. It follows your system language; change it under **Auto-tidy · Claude → Language**.
 
 ## Built with
 
