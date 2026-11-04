@@ -41,7 +41,8 @@ and works with the Claude you already have signed in on your computer, with no A
   add words in the name and "older than N days", then choose: move to a folder or send to the Trash.
   While you build a rule it shows how many files in the folder match right now.
 - **Say it instead** — write "move PDFs with '계약서' in the name to Documents/계약서" and Claude fills in the rule.
-- **Documents-first defaults** — Downloads is sorted into `Documents/사진·이미지`, `미디어`, `자료` and `개발리소스` out of the box.
+- **Documents-first defaults** — Downloads is sorted into `Documents/Images`, `Media`, `Files` and `Dev Resources` out of the box
+  (`사진·이미지`, `미디어`, `자료` and `개발리소스` when the app runs in Korean). Installers older than 7 days go to the Trash.
 - **Auto-tidy** — turn it on for a folder and new files are sorted once they finish downloading
   (the size has to stay the same twice). It keeps watching from the menu bar (notification area on Windows) after you close the window.
   When it's done, a banner drops in at the top of the screen: "으이구!! 폴더 청소 좀 하랬지!!" (roughly "Ugh!! Didn't I tell you to clean your folders!!"). Click it to open the folder.
