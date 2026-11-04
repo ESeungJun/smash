@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smash! 구현도 · folder-tidy</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.min.css">
+<style>
+:root{--bg:#fbfaf8;--panel:#fff;--text:#1f2328;--muted:#656d76;--line:#e6e3de;--accent:#3b5bdb;--accent-soft:#edf2ff;--code:#f4f2ee;--th:#f4f2ee}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15171a;--panel:#1c1f23;--text:#e6e6e3;--muted:#9aa1a9;--line:#2e3238;--accent:#91a7ff;--accent-soft:#232a45;--code:#23262b;--th:#23262b}}
+:root[data-theme="dark"]{--bg:#15171a;--panel:#1c1f23;--text:#e6e6e3;--muted:#9aa1a9;--line:#2e3238;--accent:#91a7ff;--accent-soft:#232a45;--code:#23262b;--th:#23262b}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.75 Pretendard,-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;word-break:keep-all;overflow-wrap:anywhere}
+.layout{display:grid;grid-template-columns:240px minmax(0,1fr) 220px;gap:40px;max-width:1280px;margin:0 auto;padding:32px 24px}
+nav.docs,aside.toc{position:sticky;top:24px;align-self:start;max-height:calc(100vh - 48px);overflow:auto;font-size:14px}
+nav.docs .project{font-weight:700;font-size:15px;margin-bottom:12px}
+nav.docs a,aside.toc a{display:block;color:var(--muted);text-decoration:none;padding:5px 10px;border-radius:8px}
+nav.docs a:hover,aside.toc a:hover{color:var(--text);background:var(--accent-soft)}
+nav.docs a.on{color:var(--accent);background:var(--accent-soft);font-weight:600}
+aside.toc .label{color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.04em;margin:0 10px 6px}
+aside.toc a.d3{padding-left:22px;font-size:13px}
+main{min-width:0}
+.meta{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:13px;border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:8px}
+.meta button{font:inherit;color:var(--muted);background:none;border:1px solid var(--line);border-radius:999px;padding:3px 12px;cursor:pointer}
+h1{font-size:32px;line-height:1.3;margin:24px 0 16px}
+h2{font-size:23px;margin:48px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+h3{font-size:18px;margin:32px 0 8px}
+h1,h2,h3,h4{position:relative;scroll-margin-top:16px}
+.anchor{position:absolute;left:-1em;color:var(--muted);text-decoration:none;opacity:0}
+h1:hover .anchor,h2:hover .anchor,h3:hover .anchor,h4:hover .anchor{opacity:.6}
+a{color:var(--accent)}
+code{font:13.5px/1.6 "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);padding:2px 6px;border-radius:5px}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+pre.mermaid{background:var(--panel);text-align:center}
+table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14.5px;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}
+th{background:var(--th);font-weight:600;white-space:nowrap}
+blockquote{margin:16px 0;padding:8px 16px;border-left:3px solid var(--accent);background:var(--accent-soft);border-radius:0 8px 8px 0;color:var(--text)}
+img{max-width:100%;border-radius:8px}
+hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+li{margin:3px 0}
+@media (max-width:1100px){.layout{grid-template-columns:200px minmax(0,1fr)}aside.toc{display:none}}
+@media (max-width:760px){.layout{display:block;padding:16px}nav.docs{position:static;max-height:none;display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}nav.docs .project{width:100%;margin:0}h1{font-size:26px}}
+@media print{nav.docs,aside.toc,.meta button{display:none}.layout{display:block}}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="docs"><div class="project">folder-tidy</div><a href="%EA%B8%B0%ED%9A%8D%EC%84%9C.html">기획서</a><a href="%EC%84%A4%EA%B3%84%EC%84%9C.html">설계서</a><a href="%EA%B5%AC%ED%98%84%EB%8F%84.html" class="on">구현도</a><a href="%EA%B2%B0%EC%A0%95%EA%B8%B0%EB%A1%9D.html">결정기록</a></nav>
+<main>
+<div class="meta"><span>마지막 수정 2026-11-04 · 원본 docs/구현도.md</span><button id="theme" type="button">테마</button></div>
+<h1 id="smash-구현도"><a class="anchor" href="#smash-구현도">#</a>Smash! 구현도</h1>
+<blockquote>
+<p>2026-11-05에 v1.1.0 코드를 보고 정리했다.
+함께 보기: <a href="기획서.html">기획서</a> · <a href="설계서.html">설계서</a> · <a href="결정기록.html">결정기록</a></p>
+</blockquote>
+<h2 id="폴더-구조"><a class="anchor" href="#폴더-구조">#</a>폴더 구조</h2>
+<pre><code class="lang-text">folder-tidy/            (GitHub: ESeungJun/smash)
+├── package.json        스크립트, electron-builder 설정
+├── src/
+│   ├── main.js         메인 프로세스: 창·트레이·IPC·등짝 스매시·잔소리 배너·자동 정리 연결
+│   ├── preload.js      렌더러에 IPC만 노출(contextBridge)
+│   ├── core/           GUI와 MCP 서버가 같이 쓰는 로직 (asar 밖으로 풀림)
+│   │   ├── config.js     설정 경로·기본 규칙·파일 종류·읽기/쓰기
+│   │   ├── organizer.js  스캔 → 계획 → 실행 → 기록·되돌리기, 폴더 트리
+│   │   ├── watcher.js    자동 정리(AutoTidy): fs.watch + 다 받아질 때까지 대기
+│   │   ├── claude.js     claude CLI 찾기·호출, 자리 제안, 말로 규칙, MCP 등록
+│   │   ├── trash.js      OS 휴지통으로 보내기
+│   │   └── lang.js       한국어·영어 문구(L), OS 언어 읽기
+│   ├── mcp/server.js   stdio MCP 서버(도구 6개)
+│   └── renderer/
+│       ├── index.html · app.js · style.css    본 화면(미리보기·규칙·기록·자동 정리 · Claude 탭)
+│       ├── smash.html · smash.js · smash.css  등짝 스매시 효과 창
+│       └── nag.html · nag.js · nag.css        자동 정리 잔소리 배너 창
+├── assets/             아이콘·트레이 아이콘 원본(svg)과 png
+├── build/              icon.png, lproj(화면 이름 Smash!)
+├── scripts/render-icons.js  svg → png 아이콘 만들기
+├── test/core.test.js   Node 내장 테스트
+└── docs/               이 문서들, README용 images·video</code></pre>
+<h2 id="주요-흐름"><a class="anchor" href="#주요-흐름">#</a>주요 흐름</h2>
+<h3 id="정리하기-버튼-등짝-스매시"><a class="anchor" href="#정리하기-버튼-등짝-스매시">#</a>정리하기 버튼 (등짝 스매시)</h3>
+<pre class="mermaid">sequenceDiagram
+  participant U as 사용자
+  participant R as 렌더러 app.js
+  participant M as main.js
+  participant FX as 효과 창 smash.html
+  participant O as organizer.js
+  U-&gt;&gt;R: 짝! 정리하기
+  R-&gt;&gt;M: invoke(&quot;apply&quot;, items)
+  M-&gt;&gt;M: smashQueue에 줄 세움 (겹치면 차례로)
+  M-&gt;&gt;FX: 투명 전체화면 창 띄움 (마우스 통과)
+  Note over FX: 0.8초에 손바닥이 내리침
+  M-&gt;&gt;M: hit: 앱 창 흔들기
+  M-&gt;&gt;O: applyPlan(cfg, items)
+  O--&gt;&gt;M: results, run (history.json에 기록)
+  FX--&gt;&gt;M: 2초 뒤 창 닫힘 (늦어도 3초 안에 강제로 닫음)
+  M-&gt;&gt;M: done: 옮긴 자리들의 공통 상위 폴더 열기
+  M--&gt;&gt;R: 결과</pre>
+<ul>
+<li><code>hit</code>과 <code>done</code>을 따로 기다린다. 효과 창이 안 닫힌 채 남아도 정리는 1.5초 안에, 창은 3초 안에 끝난다(<a href="../../src/main.js">main.js <code>smashEffect</code></a>).</li>
+</ul>
+<h3 id="스캔과-계획"><a class="anchor" href="#스캔과-계획">#</a>스캔과 계획</h3>
+<pre class="mermaid">flowchart TD
+  A[&quot;정리 대상 폴더 바로 아래 파일 목록&quot;] --&gt; B{&quot;숨김·다운로드 중·건너뛰기 패턴?&quot;}
+  B -- 예 --&gt; X[&quot;건너뜀&quot;]
+  B -- 아니오 --&gt; C{&quot;위에서부터 맞는 규칙 찾기&lt;br/&gt;확장자 · 이름 단어(NFC) · N일 지남&quot;}
+  C -- 없음 --&gt; U[&quot;규칙 없음 목록&lt;br/&gt;(Claude에 물어볼 수 있음)&quot;]
+  C -- trash --&gt; T[&quot;휴지통으로&quot;]
+  C -- move --&gt; D{&quot;목적지에 같은 이름?&quot;}
+  D -- 없음 --&gt; M[&quot;그 이름으로 옮김&quot;]
+  D -- 내용도 같음 --&gt; DUP[&quot;중복: 휴지통으로&quot;]
+  D -- 내용 다름 --&gt; RN[&quot;이름 (2) 붙여 옮김&quot;]</pre>
+<h3 id="자동-정리"><a class="anchor" href="#자동-정리">#</a>자동 정리</h3>
+<pre class="mermaid">sequenceDiagram
+  participant FS as 파일 시스템
+  participant W as watcher.js AutoTidy
+  participant O as organizer.js
+  participant M as main.js
+  FS-&gt;&gt;W: fs.watch 이벤트
+  W-&gt;&gt;W: 1.5초 디바운스
+  W-&gt;&gt;W: 수정 뒤 autoDelaySec(기본 10초)이 지났고 지난 확인 때와 크기가 같은 파일만 대상
+  W-&gt;&gt;O: scanTarget → applyPlan (사용자 규칙만, AI 제안 안 씀)
+  O--&gt;&gt;W: 결과
+  W-&gt;&gt;M: onRun
+  M-&gt;&gt;M: 잔소리 배너 4.5초 (누르면 폴더 열기)
+  Note over W: 10분마다 한 번 전체 훑기, 감시가 끊기면 30초 뒤 다시 걸기</pre>
+<h3 id="claude에-자리-묻기"><a class="anchor" href="#claude에-자리-묻기">#</a>Claude에 자리 묻기</h3>
+<pre class="mermaid">sequenceDiagram
+  participant R as 렌더러
+  participant M as main.js
+  participant C as claude.js
+  participant CLI as claude -p
+  R-&gt;&gt;M: ai:suggest(targetId, 규칙 없는 파일)
+  M-&gt;&gt;C: suggestPlacements
+  C-&gt;&gt;CLI: 이름·크기·날짜 + 폴더 목록 (stdin), 도구 끔, json-schema
+  CLI--&gt;&gt;C: [{file, dest, reason}]
+  C-&gt;&gt;C: planFromMoves: 정리 대상 밖 목적지는 거부
+  C--&gt;&gt;R: 계획 (미리보기에 &quot;AI:&quot; 이유와 함께 표시)</pre>
+<h2 id="핵심-파일"><a class="anchor" href="#핵심-파일">#</a>핵심 파일</h2>
+<table>
+<thead>
+<tr>
+<th>파일</th>
+<th>설명</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><a href="../../src/core/organizer.js">src/core/organizer.js</a></td>
+<td><code>scanTarget</code>(계획), <code>applyPlan</code>(실행·안전장치), <code>undoLast</code>, <code>planFromMoves</code>(AI·MCP 계획 검증), <code>folderTree</code>. 한글 비교는 <code>nfc()</code></td>
+</tr>
+<tr>
+<td><a href="../../src/core/config.js">src/core/config.js</a></td>
+<td><code>CATEGORIES</code>(파일 종류 칩), <code>defaultConfig</code>(문서 폴더 기준 기본 규칙), <code>normalize</code>, <code>writeJsonAtomic</code></td>
+</tr>
+<tr>
+<td><a href="../../src/core/watcher.js">src/core/watcher.js</a></td>
+<td><code>AutoTidy.sync</code>가 자동 정리 켠 폴더만 감시</td>
+</tr>
+<tr>
+<td><a href="../../src/core/claude.js">src/core/claude.js</a></td>
+<td><code>findClaudeCli</code>, <code>runCli</code>, <code>suggestPlacements</code>, <code>ruleFromText</code>, <code>claudeConfigLocations</code>, <code>registerClaudeCode</code>, <code>registerClaudeDesktop</code></td>
+</tr>
+<tr>
+<td><a href="../../src/mcp/server.js">src/mcp/server.js</a></td>
+<td>줄 단위 JSON-RPC. <code>initialize</code>, <code>tools/list</code>, <code>tools/call</code></td>
+</tr>
+<tr>
+<td><a href="../../src/main.js">src/main.js</a></td>
+<td><code>mcpLaunch</code>, <code>smashEffect</code>, <code>smashAndApply</code>, <code>tidiedFolder</code>, <code>showNag</code>, IPC 핸들러(<code>config:*</code>, <code>scan</code>, <code>apply</code>, <code>undo</code>, <code>ai:suggest</code>, <code>integration:*</code> 등)</td>
+</tr>
+<tr>
+<td><a href="../../test/core.test.js">test/core.test.js</a></td>
+<td><code>SMASH_HOME</code>을 임시 폴더로 두고 core·MCP·AutoTidy를 검증</td>
+</tr>
+</tbody></table>
+<h2 id="빌드실행배포"><a class="anchor" href="#빌드실행배포">#</a>빌드·실행·배포</h2>
+<pre><code class="lang-bash">npm install
+npm start          # 앱 실행
+npm test           # node --test test/*.test.js
+npm run mcp        # MCP 서버만 띄우기 (ELECTRON_RUN_AS_NODE=1)
+npm run icons      # assets/*.svg → build/icon.png, 트레이 아이콘
+npm run dist:mac   # dist/Smash-macOS-arm64.dmg, dist/Smash-macOS-x64.dmg
+npm run dist:win   # dist/Smash-Windows-x64-Setup.exe (macOS에서도 빌드됨)</code></pre>
+<ul>
+<li>빌드 <code>productName</code>은 영문 <code>Smash</code>로 둔다. 실행 파일과 Helper 앱 이름이 이걸 따라가는데, 둘이 어긋나면 &quot;Unable to find helper app&quot;으로 앱이 켜진 뒤 바로 죽는다. 화면 이름 <code>Smash!</code>는 <code>build/lproj</code>와 <code>app.setName</code>이 맡는다.</li>
+<li>설치본을 확인할 때는 30초 넘게 띄워 두고 크래시 리포트까지 본다.</li>
+<li>배포: <code>dist/</code>의 dmg 두 개와 exe를 GitHub 릴리스에 올린다. 파일 이름에 버전을 넣지 않아 README의 <code>releases/latest/download/</code> 링크가 늘 최신을 가리킨다.</li>
+<li>깃 흐름(git flow, 도구 없이 수동): <code>main</code>은 릴리스만, <code>develop</code>이 기본 작업 브랜치, 기능은 <code>feature/*</code>, 릴리스는 <code>release/x.y.z</code>에서 버전을 올려 <code>main</code>에 합치고 <code>vX.Y.Z</code> 태그. 개발 중에는 버전을 올리지 않는다.</li>
+</ul>
+<h2 id="버전릴리스-현황"><a class="anchor" href="#버전릴리스-현황">#</a>버전·릴리스 현황</h2>
+<table>
+<thead>
+<tr>
+<th>태그</th>
+<th>날짜</th>
+<th>내용</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>v1.0.0</td>
+<td>2026-11-02</td>
+<td>첫 공개. 규칙·트리 미리보기·자동 정리·잔소리 배너·등짝 스매시·Claude CLI·MCP</td>
+</tr>
+<tr>
+<td>v1.1.0</td>
+<td>2026-11-02</td>
+<td>화면 언어 설정(한국어·영어). MCP 서버도 앱에서 고른 언어로 답함</td>
+</tr>
+</tbody></table>
+<ul>
+<li>공개 전 개발은 2026-11-01 23시 첫 커밋부터 시작해 v1.1.0까지 약 13시간 걸렸다(개발 글 기준). 공개할 때 히스토리를 한 커밋(<code>cc2a20e</code>)으로 새로 만들었다.</li>
+</ul>
+<h2 id="앞으로-할-일"><a class="anchor" href="#앞으로-할-일">#</a>앞으로 할 일</h2>
+<ul>
+<li><input disabled="" type="checkbox"> macOS 코드 서명·공증, Windows 코드 서명</li>
+<li><input disabled="" type="checkbox"> Windows 실기기 테스트</li>
+<li><input disabled="" type="checkbox"> Tauri 판 검토(개발 글에서 &quot;다음 기회에&quot;로 남김)</li>
+</ul>
+
+</main>
+<aside class="toc"><div class="label">이 문서</div><a class="d2" href="#폴더-구조">폴더 구조</a><a class="d2" href="#주요-흐름">주요 흐름</a><a class="d3" href="#정리하기-버튼-등짝-스매시">정리하기 버튼 (등짝 스매시)</a><a class="d3" href="#스캔과-계획">스캔과 계획</a><a class="d3" href="#자동-정리">자동 정리</a><a class="d3" href="#claude에-자리-묻기">Claude에 자리 묻기</a><a class="d2" href="#핵심-파일">핵심 파일</a><a class="d2" href="#빌드실행배포">빌드·실행·배포</a><a class="d2" href="#버전릴리스-현황">버전·릴리스 현황</a><a class="d2" href="#앞으로-할-일">앞으로 할 일</a></aside>
+</div>
+<script>
+(function(){var r=document.documentElement,k='docs-theme';try{var s=localStorage.getItem(k);if(s)r.dataset.theme=s}catch(e){}
+document.getElementById('theme').onclick=function(){var d=r.dataset.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');r.dataset.theme=d==='dark'?'light':'dark';try{localStorage.setItem(k,r.dataset.theme)}catch(e){}location.reload()};})();
+</script>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
+const r=document.documentElement;const dark=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme: dark)').matches;
+mermaid.initialize({startOnLoad:true,theme:dark?'dark':'default',fontFamily:'Pretendard, sans-serif'});
+</script>
+</body>
+</html>
