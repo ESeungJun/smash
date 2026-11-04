@@ -10,86 +10,15 @@
   },
   "author": "Haul",
   "license": "MIT",
-  "main": "src/main.js",
   "scripts": {
-    "start": "electron .",
-    "mcp": "ELECTRON_RUN_AS_NODE=1 electron src/mcp/server.js",
-    "test": "node --test test/*.test.js",
-    "dist:mac": "electron-builder --mac --publish never",
-    "dist:win": "electron-builder --win --publish never",
-    "icons": "electron scripts/render-icons.js"
-  },
-  "build": {
-    "appId": "dev.haul.smash",
-    "productName": "Smash",
-    "files": [
-      "src/**/*",
-      "assets/*.png",
-      "package.json"
-    ],
-    "asarUnpack": [
-      "src/core/**",
-      "src/mcp/**"
-    ],
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        }
-      ],
-      "category": "public.app-category.productivity",
-      "icon": "build/icon.png",
-      "extendInfo": {
-        "LSUIElement": false,
-        "LSHasLocalizedDisplayName": true,
-        "CFBundleName": "Smash",
-        "CFBundleDisplayName": "Smash"
-      },
-      "extraResources": [
-        {
-          "from": "build/lproj/ko.lproj",
-          "to": "ko.lproj"
-        },
-        {
-          "from": "build/lproj/en.lproj",
-          "to": "en.lproj"
-        },
-        {
-          "from": "build/lproj/Base.lproj",
-          "to": "Base.lproj"
-        }
-      ],
-      "artifactName": "Smash-macOS-${arch}.${ext}"
-    },
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "build/icon.png"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "artifactName": "Smash-Windows-${arch}-Setup.${ext}",
-      "shortcutName": "Smash!"
-    },
-    "publish": [],
-    "directories": {
-      "buildResources": "build"
-    },
-    "artifactName": "Smash-${version}-${arch}.${ext}"
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "web": "node scripts/build-web.js",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "tauri": "tauri",
+    "icons": "npx -y electron@45 scripts/render-icons.js"
   },
   "devDependencies": {
-    "electron": "^45.2.1",
-    "electron-builder": "^26.18.0"
+    "@tauri-apps/cli": "^2.12.4"
   }
 }
