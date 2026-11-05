@@ -49,6 +49,7 @@ fn tools() -> Value {
                 "older_than_days": { "type": "number" },
                 "action": { "type": "string", "enum": ["move", "trash"] },
                 "dest": { "type": "string", "description": "move일 때 목적지. 상대 경로면 대상 폴더 기준." },
+                "group": { "type": "string", "enum": ["", "auto", "month"], "description": "목적지 안 소분류. auto=용도(영수증·스크린샷 등)·비슷한 이름·찍은 시간으로 하위 폴더, month=연-월, 빈 문자열=없음. 기본 auto" },
                 "position": { "type": "string", "enum": ["first", "last"], "description": "기본 first" }
             }, "required": ["target", "name", "action"] }
         },
@@ -119,12 +120,15 @@ impl Server {
                     .map(|t| json!({
                         "id": t.id,
                         "path": t.path,
+                        "includeSubfolders": t.recursive,
+                        "sharesRulesOf": if t.link.is_empty() { Value::Null } else { json!(t.link) },
                         "rules": t.rules.iter().map(|r| json!({
                             "name": r.name,
                             "enabled": r.enabled,
                             "when": r.matcher,
                             "action": r.action,
                             "dest": if r.dest.is_empty() { Value::Null } else { json!(r.dest) },
+                            "group": r.group,
                         })).collect::<Vec<_>>(),
                     }))
                     .collect::<Vec<_>>()))
@@ -218,6 +222,11 @@ impl Server {
                     matcher,
                     action: action.into(),
                     dest: if action == "trash" { String::new() } else { dest },
+                    group: match args.get("group").and_then(Value::as_str) {
+                        _ if action == "trash" => String::new(),
+                        Some(g) if crate::config::GROUP_MODES.contains(&g) => g.into(),
+                        _ => "auto".into(),
+                    },
                 };
                 let last = args.get("position").and_then(Value::as_str) == Some("last");
                 let path = crate::organizer::add_rule(&mut cfg, &target, rule, last)?;

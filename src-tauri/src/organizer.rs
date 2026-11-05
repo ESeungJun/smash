@@ -1,6 +1,6 @@
 //! 폴더 스캔 → 정리 계획 → 실행 → 기록·되돌리기.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -21,6 +21,18 @@ const DAY_MS: f64 = 24.0 * 60.0 * 60.0 * 1000.0;
 const HISTORY_LIMIT: usize = 50;
 /// 폴더 목록을 만들 때 들어가지 않는 폴더(내부 구조라 정리 대상이 아님)
 const OPAQUE_DIRS: [&str; 3] = ["node_modules", ".git", "Unreal Projects"];
+/// 하위 폴더까지 정리할 때 들어가지 않는 폴더: 앱·라이브러리 같은 꾸러미 폴더(확장자로 판단)
+const PACKAGE_EXTS: &[&str] = &[
+    "app", "bundle", "framework", "plugin", "kext", "photoslibrary", "musiclibrary", "tvlibrary", "imovielibrary", "fcpbundle", "logicx", "band",
+    "lrdata", "lrlibrary", "aplibrary", "xcodeproj", "xcworkspace", "playground", "rtfd", "pages", "numbers", "key", "sparsebundle", "pkg", "mpkg",
+];
+/// 이 파일이 들어 있으면 개발 프로젝트로 보고 안에 들어가지 않는다(파일을 빼면 프로젝트가 깨진다)
+const PROJECT_MARKERS: &[&str] = &[
+    ".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", "requirements.txt", "pom.xml", "build.gradle", "build.gradle.kts",
+    "settings.gradle", "Gemfile", "composer.json", "CMakeLists.txt", "Makefile", ".project", ".sln", "Podfile", "pubspec.yaml",
+];
+const MAX_DEPTH: usize = 8;
+const MAX_SCAN_FILES: usize = 20_000;
 
 // ── 모양 ──────────────────────────────────────────────
 
@@ -38,6 +50,9 @@ pub struct Item {
     pub duplicate_of: Option<String>,
     pub rule_id: Option<String>,
     pub reason: String,
+    /// 규칙의 대분류 폴더(소분류를 붙이기 전). 이미지 내용으로 다시 묶을 때 쓴다.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_base: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -126,9 +141,15 @@ fn lower_nfc(s: &str) -> String {
 }
 
 /// `*`·`?` 만 쓰는 간단한 glob, 대소문자 무시
+#[cfg(test)]
 fn glob_match(pattern: &str, name: &str) -> bool {
-    let p: Vec<char> = lower_nfc(pattern).chars().collect();
-    let n: Vec<char> = lower_nfc(name).chars().collect();
+    glob_match_lower(&lower_nfc(pattern), &lower_nfc(name))
+}
+
+/// 둘 다 이미 소문자·NFC 인 glob 비교
+fn glob_match_lower(pattern: &str, name: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
     let (mut pi, mut ni, mut star, mut mark) = (0usize, 0usize, None::<usize>, 0usize);
     while ni < n.len() {
         if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
@@ -159,10 +180,15 @@ pub struct Skipper {
 
 impl Skipper {
     pub fn new(cfg: &Config) -> Self {
-        Skipper { hidden: cfg.skip.hidden, patterns: cfg.skip.patterns.clone() }
+        // 패턴은 한 번만 소문자·NFC 로 바꿔 둔다(파일마다 다시 바꾸지 않게)
+        Skipper { hidden: cfg.skip.hidden, patterns: cfg.skip.patterns.iter().map(|p| lower_nfc(p)).collect() }
     }
     pub fn skip(&self, name: &str) -> bool {
-        (self.hidden && name.starts_with('.')) || self.patterns.iter().any(|p| glob_match(p, name))
+        if self.hidden && name.starts_with('.') {
+            return true;
+        }
+        let lower = lower_nfc(name);
+        self.patterns.iter().any(|p| glob_match_lower(p, &lower))
     }
 }
 
@@ -325,7 +351,7 @@ pub fn list_files(dir: &Path, skip: &Skipper) -> Result<Vec<FileInfo>, String> {
         let Ok(meta) = entry.metadata() else { continue };
         out.push(FileInfo { name, path: entry.path().to_string_lossy().into_owned(), size: meta.len() as f64, mtime_ms: mtime_ms(&meta) });
     }
-    out.sort_by_key(|f| lower_nfc(&f.name));
+    out.sort_by_cached_key(|f| lower_nfc(&f.name));
     Ok(out)
 }
 
@@ -341,47 +367,232 @@ fn make_item(file: &FileInfo, p: Plan, rule_id: Option<String>, reason: String) 
         duplicate_of: p.duplicate_of,
         rule_id,
         reason,
+        group_base: None,
     }
 }
 
 // ── 스캔 ──────────────────────────────────────────────
 
+/// 이 정리 대상에 적용할 규칙과, 규칙 목적지(상대 경로)의 기준이 되는 폴더.
+/// 자기 규칙이 먼저, 기준 폴더에 연결돼 있으면 그다음 기준 폴더 규칙.
+pub fn effective_rules<'a>(cfg: &'a Config, target: &'a Target) -> Vec<(&'a Rule, PathBuf)> {
+    let root = target_root(target);
+    let mut out: Vec<(&Rule, PathBuf)> = target.rules.iter().map(|r| (r, root.clone())).collect();
+    if !target.link.is_empty() {
+        if let Some(base) = cfg.targets.iter().find(|t| t.id == target.link && t.id != target.id) {
+            let base_root = target_root(base);
+            out.extend(base.rules.iter().map(|r| (r, base_root.clone())));
+        }
+    }
+    out
+}
+
+fn is_opaque_dir(dir: &Path, name: &str) -> bool {
+    let ext = Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    OPAQUE_DIRS.contains(&name)
+        || name.ends_with("_files")
+        || PACKAGE_EXTS.contains(&ext.as_str())
+        || PROJECT_MARKERS.iter().any(|m| dir.join(m).exists())
+}
+
+/// 정리 대상의 파일들. 하위 폴더까지 정리가 꺼져 있으면 바로 아래 파일만.
+/// 켜져 있어도 숨김·건너뛰기 폴더, 앱·라이브러리 꾸러미, 개발 프로젝트, 다른 정리 대상 폴더 안에는 들어가지 않는다.
+pub fn scan_files(cfg: &Config, target: &Target) -> Result<Vec<FileInfo>, String> {
+    let root = target_root(target);
+    let skip = Skipper::new(cfg);
+    let mut out = list_files(&root, &skip)?;
+    if !target.recursive {
+        return Ok(out);
+    }
+    let others: Vec<PathBuf> = target_roots(cfg).into_iter().filter(|r| *r != root).collect();
+    let mut stack: Vec<(PathBuf, usize)> = vec![(root.clone(), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth >= MAX_DEPTH || out.len() >= MAX_SCAN_FILES {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let mut subdirs: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false)) // 바로가기(심볼릭 링크)는 따라가지 않는다
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let path = e.path();
+                (!skip.skip(&name) && !is_opaque_dir(&path, &name) && !others.contains(&clean(&path))).then_some(path)
+            })
+            .collect();
+        subdirs.sort();
+        for sub in subdirs.into_iter().rev() {
+            let room = MAX_SCAN_FILES.saturating_sub(out.len());
+            if room == 0 {
+                break;
+            }
+            if let Ok(files) = list_files(&sub, &skip) {
+                out.extend(files.into_iter().take(room));
+            }
+            stack.push((sub, depth + 1));
+        }
+    }
+    out.truncate(MAX_SCAN_FILES);
+    Ok(out)
+}
+
+/// 규칙 편집 중 미리보기는 글자를 칠 때마다 불린다. 하위 폴더까지 훑는 목록은 잠깐(5초) 재사용한다.
+fn scan_files_cached(cfg: &Config, target: &Target) -> Result<Vec<FileInfo>, String> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    type Cache = Option<(String, Instant, Vec<FileInfo>)>;
+    static CACHE: Mutex<Cache> = Mutex::new(None);
+    if !target.recursive {
+        return scan_files(cfg, target);
+    }
+    let key = format!("{}|{}", target.id, target_root(target).display());
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((k, at, files)) = cache.as_ref() {
+        if *k == key && at.elapsed() < Duration::from_secs(5) {
+            return Ok(files.clone());
+        }
+    }
+    let files = scan_files(cfg, target)?;
+    *cache = Some((key, Instant::now(), files.clone()));
+    Ok(files)
+}
+
+fn existing_subdirs(dir: &Path, skip: &Skipper) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else { return vec![] };
+    entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !skip.skip(n))
+        .collect()
+}
+
 pub fn scan_target(cfg: &Config, reference: Option<&str>) -> Result<Scan, String> {
-    let target = find_target(cfg, reference).ok_or_else(|| not_in_settings(reference.unwrap_or("")))?;
+    scan_target_with(cfg, reference, true)
+}
+
+/// `subfolders`: false 면 '하위 폴더까지 정리'가 켜져 있어도 바로 아래 파일만 본다(자동 정리는 새로 들어온 파일만 다룬다).
+pub fn scan_target_with(cfg: &Config, reference: Option<&str>, subfolders: bool) -> Result<Scan, String> {
+    let found = find_target(cfg, reference).ok_or_else(|| not_in_settings(reference.unwrap_or("")))?;
+    let mut shallow;
+    let target = if subfolders || !found.recursive {
+        found
+    } else {
+        shallow = found.clone();
+        shallow.recursive = false;
+        &shallow
+    };
     let root = target_root(target);
     if !root.exists() {
         return Err(format!("{}{}", l("폴더가 없습니다: ", "Folder not found: "), target.path));
     }
     let skip = Skipper::new(cfg);
-    let mut reserved = HashSet::new();
+    let rules = effective_rules(cfg, target);
     let now = now_ms();
-    let mut items = Vec::new();
+    let files = scan_files(cfg, target)?;
+
+    // 1. 파일마다 처음 맞는 규칙
+    let mut hit: Vec<Option<(&Rule, PathBuf)>> = Vec::with_capacity(files.len());
     let mut unmatched = Vec::new();
-    for file in list_files(&root, &skip)? {
-        let Some(rule) = target.rules.iter().find(|r| match_rule(r, &file.name, file.mtime_ms, now)) else {
-            unmatched.push(file);
-            continue;
-        };
+    for file in &files {
+        match rules.iter().find(|(r, _)| match_rule(r, &file.name, file.mtime_ms, now)) {
+            Some((rule, base)) => {
+                let dir = if rule.action == "trash" { PathBuf::new() } else { clean(&resolve_dest_dir(base, &rule.dest)) };
+                hit.push(Some((rule, dir)));
+            }
+            None => {
+                hit.push(None);
+                unmatched.push(file.clone());
+            }
+        }
+    }
+
+    // 2. 같은 규칙·같은 대분류 폴더로 가는 파일끼리 소분류
+    let mut groups: HashMap<(String, PathBuf), Vec<usize>> = HashMap::new();
+    for (i, h) in hit.iter().enumerate() {
+        if let Some((rule, dir)) = h {
+            if rule.action == "move" && !rule.group.is_empty() {
+                groups.entry((rule.id.clone(), dir.clone())).or_default().push(i);
+            }
+        }
+    }
+    let mut sub: Vec<Option<String>> = vec![None; files.len()];
+    for ((_, dir), idx) in &groups {
+        let mode = hit[idx[0]].as_ref().map(|(r, _)| r.group.as_str()).unwrap_or("");
+        let gfiles: Vec<crate::grouping::GFile> =
+            idx.iter().map(|&i| crate::grouping::GFile { name: files[i].name.clone(), mtime_ms: files[i].mtime_ms }).collect();
+        for (k, s) in crate::grouping::subfolders(mode, &gfiles, &existing_subdirs(dir, &skip)).into_iter().enumerate() {
+            sub[idx[k]] = s.and_then(|s| crate::grouping::clean_folder(&s));
+        }
+    }
+
+    // 3. 파일 순서대로 계획 (같은 이름 충돌을 순서대로 막는다)
+    let mut reserved = HashSet::new();
+    let mut items = Vec::new();
+    for (i, file) in files.iter().enumerate() {
+        let Some((rule, dir)) = &hit[i] else { continue };
+        let src = Path::new(&file.path);
         let planned = if rule.action == "trash" {
             Some(Plan { action: "trash", dest: String::new(), note: None, duplicate_of: None })
         } else {
-            plan_move(Path::new(&file.path), &resolve_dest_dir(&root, &rule.dest), &mut reserved)
+            // 이미 대분류 폴더의 하위 폴더 어딘가에 있으면 그대로 둔다: 사용자가 나눠 둔 것을 풀지 않고,
+            // 시간·이름 묶음이 다시 계산돼도 정리할 때마다 자리가 바뀌지 않게
+            if src.parent().map(|p| is_inside(&clean(p), dir)).unwrap_or(false) {
+                continue;
+            }
+            let dest_dir = match &sub[i] {
+                Some(s) => dir.join(s),
+                None => dir.clone(),
+            };
+            plan_move(src, &dest_dir, &mut reserved)
         };
         if let Some(p) = planned {
-            items.push(make_item(&file, p, Some(rule.id.clone()), rule.name.clone()));
+            let mut item = make_item(file, p, Some(rule.id.clone()), rule.name.clone());
+            if rule.action == "move" {
+                item.group_base = Some(dir.to_string_lossy().into_owned());
+            }
+            items.push(item);
         }
     }
     Ok(Scan { target_id: target.id.clone(), root: root.to_string_lossy().into_owned(), items, unmatched })
 }
 
+/// 미리보기 계획의 일부 항목을 새 소분류로 옮겨 다시 계획한다(이미지 내용으로 묶기 결과).
+/// `assign`: 항목 id → 대분류 폴더 안 소분류("게임/엘든 링"). 나머지 항목은 원래 목적지 그대로.
+pub fn regroup(cfg: &Config, items: Vec<Item>, assign: &HashMap<String, String>) -> Vec<Item> {
+    let mut reserved = HashSet::new();
+    let mut out = Vec::new();
+    for mut item in items {
+        if item.action != "move" {
+            out.push(item);
+            continue;
+        }
+        let src = abs(&item.src);
+        let mut dir = abs(&item.dest).parent().map(Path::to_path_buf).unwrap_or_default();
+        if let (Some(sub), Some(base)) = (assign.get(&item.id).and_then(|s| crate::grouping::clean_folder(s)), item.group_base.as_ref()) {
+            let wanted = clean(&abs(base).join(sub));
+            if inside_any_root(cfg, &wanted) {
+                dir = wanted;
+            }
+        }
+        if let Some(p) = plan_move(&src, &dir, &mut reserved) {
+            item.action = p.action.into();
+            item.dest = p.dest;
+            item.note = p.note.map(String::from);
+            item.duplicate_of = p.duplicate_of;
+            out.push(item);
+        }
+    }
+    out
+}
+
 /// 규칙 편집 중 미리보기: 이 규칙 하나에 지금 맞는 파일들.
 pub fn test_rule(cfg: &Config, reference: &str, rule: &Value) -> Result<Vec<String>, String> {
     let target = find_target(cfg, Some(reference)).ok_or_else(|| not_in_settings(reference))?;
-    let root = target_root(target);
     let mut candidate = crate::config::normalize_rule(rule);
     candidate.enabled = true;
     let now = now_ms();
-    Ok(list_files(&root, &Skipper::new(cfg))?
+    Ok(scan_files_cached(cfg, target)?
         .into_iter()
         .filter(|f| match_rule(&candidate, &f.name, f.mtime_ms, now))
         .map(|f| f.name)
@@ -826,6 +1037,55 @@ mod tests {
         assert_eq!(missing_dirs(&dest), vec![inbox.join("새폴더").join("하위"), inbox.join("새폴더")]);
         assert!(missing_dirs(&inbox.join("문서").join("a.txt")).is_empty());
         let _ = load_config();
+    }
+
+    #[test]
+    fn linked_recursive_grouped_scan() {
+        let _g = guard();
+        let sb = sandbox();
+        let docs = sb.join("docs2");
+        let dl = sb.join("dl2");
+        let _ = fs::remove_dir_all(&docs);
+        let _ = fs::remove_dir_all(&dl);
+        write(&docs.join("영수증_11월.pdf"), "r", 0);
+        write(&docs.join("내 폴더").join("메모.pdf"), "m", 0);
+        write(&docs.join("proj").join("package.json"), "{}", 0);
+        write(&docs.join("proj").join("spec.pdf"), "s", 0);
+        write(&docs.join("문서").join("이미 정리.pdf"), "x", 0);
+        write(&docs.join("문서").join("2025").join("old.pdf"), "o", 0);
+        write(&docs.join("문서").join("2024 회사").join("영수증_10월.pdf"), "r", 0);
+        write(&dl.join("받은 계약서.pdf"), "c", 0);
+        let cfg = save_config_value(&json!({ "targets": [
+            { "id": "docs", "path": docs, "recursive": true, "rules": [
+                { "name": "문서", "match": { "extensions": ["pdf"] }, "action": "move", "dest": "문서", "group": "auto" }
+            ]},
+            { "id": "dl", "path": dl, "link": "docs", "rules": [] }
+        ]}))
+        .unwrap();
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        let scan = scan_target(&cfg, Some("docs")).unwrap();
+        let by = |n: &str| scan.items.iter().find(|i| i.name == n).cloned();
+        assert_eq!(by("영수증_11월.pdf").unwrap().dest, s(docs.join("문서").join("영수증·청구서").join("영수증_11월.pdf")));
+        assert_eq!(by("메모.pdf").unwrap().dest, s(docs.join("문서").join("메모.pdf")), "하위 폴더 파일도 정리");
+        assert!(by("spec.pdf").is_none(), "개발 프로젝트 폴더 안은 안 들어간다");
+        assert!(by("이미 정리.pdf").is_none() && by("old.pdf").is_none(), "이미 대분류 안에 있고 소분류가 없으면 그대로");
+        assert!(by("영수증_10월.pdf").is_none(), "대분류 안 사용자 하위 폴더는 소분류가 붙어도 풀지 않는다");
+        assert!(scan_target_with(&cfg, Some("docs"), false).unwrap().items.iter().all(|i| i.name != "메모.pdf"), "자동 정리는 하위 폴더를 안 본다");
+        assert_eq!(by("영수증_11월.pdf").unwrap().group_base, Some(s(docs.join("문서"))));
+
+        let scan = scan_target(&cfg, Some("dl")).unwrap();
+        assert_eq!(scan.items[0].dest, s(docs.join("문서").join("계약서").join("받은 계약서.pdf")), "연결된 폴더는 기준 폴더 규칙·트리로");
+
+        let mut flat = cfg.clone();
+        flat.targets[0].recursive = false;
+        assert!(scan_target(&flat, Some("docs")).unwrap().items.iter().all(|i| i.name != "메모.pdf"), "꺼져 있으면 사용자 폴더는 안 건드린다");
+
+        // 이미지 내용 묶기 결과로 다시 계획
+        let items = scan_target(&cfg, Some("docs")).unwrap().items;
+        let id = items.iter().find(|i| i.name == "메모.pdf").unwrap().id.clone();
+        let assign: HashMap<String, String> = [(id.clone(), "게임/엘든 링".to_string())].into();
+        let re = regroup(&cfg, items, &assign);
+        assert_eq!(re.iter().find(|i| i.id == id).unwrap().dest, s(docs.join("문서").join("게임").join("엘든 링").join("메모.pdf")));
     }
 
     #[test]

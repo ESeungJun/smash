@@ -3,9 +3,11 @@
 
 pub mod claude;
 pub mod config;
+pub mod grouping;
 pub mod lang;
 pub mod mcp;
 pub mod organizer;
+pub mod thumbs;
 pub mod trash;
 pub mod watcher;
 
@@ -177,18 +179,35 @@ fn create_main(app: &AppHandle, show: bool) -> tauri::Result<WebviewWindow> {
         .build()?;
     let handle = app.clone();
     win.on_window_event(move |e| {
-        // 자동 정리가 켜져 있으면 창을 닫아도 트레이에서 계속 지켜본다
+        // 창을 닫아도 앱은 트레이(메뉴 막대·알림 영역)에 남는다. 끝내기는 트레이 메뉴의 '종료'.
         if let WindowEvent::CloseRequested { api, .. } = e {
-            if !handle.state::<Quitting>().0.load(Ordering::SeqCst) && any_auto(&cfg_or_default()) {
+            // 리눅스는 트레이가 없을 수 있어 예전처럼 자동 정리를 켰을 때만 숨긴다
+            let keep = !cfg!(target_os = "linux") || any_auto(&cfg_or_default());
+            if keep && !handle.state::<Quitting>().0.load(Ordering::SeqCst) {
                 api.prevent_close();
                 if let Some(w) = handle.get_webview_window("main") {
                     let _ = w.hide();
                 }
                 set_dock(&handle, false);
+                tell_still_running(&handle);
             }
         }
     });
     Ok(win)
+}
+
+/// 윈도우는 X 를 누르면 끝난 줄 알기 쉬워서, 처음 숨길 때 한 번 알림 영역에 있다고 알린다.
+fn tell_still_running(app: &AppHandle) {
+    static TOLD: AtomicBool = AtomicBool::new(false);
+    if !cfg!(target_os = "windows") || TOLD.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = app
+        .notification()
+        .builder()
+        .title(l(&format!("{APP_NAME} 는 알림 영역에서 계속 실행 중이에요"), &format!("{APP_NAME} is still running in the tray")))
+        .body(l("끝내려면 알림 영역 아이콘 메뉴에서 '종료'를 누르세요.", "To quit, use 'Quit' in the tray icon menu."))
+        .show();
 }
 
 fn show_window(app: &AppHandle, tab: Option<&str>) {
@@ -821,9 +840,22 @@ fn target_root_of(cfg: &Config, target_id: &str) -> Result<String, String> {
 async fn rule_from_text(target_id: String, text: String) -> Result<Value, String> {
     blocking(move || {
         let cfg = load_config()?;
-        let root = target_root_of(&cfg, &target_id)?;
+        let target = find_target(&cfg, Some(&target_id)).ok_or_else(|| l("폴더를 찾을 수 없습니다", "Folder not found"))?;
         let text: String = text.chars().take(500).collect();
-        claude::rule_from_text(&cfg, &root, &text)
+        claude::rules_proposal(&cfg, target, &text)
+    })
+    .await
+}
+
+/// 미리보기 계획의 사진·동영상을 Claude 에 썸네일로 보여 주고 소분류를 다시 정한다.
+#[tauri::command]
+async fn ai_group_media(items: Vec<Item>) -> Result<Value, String> {
+    blocking(move || {
+        let cfg = load_config()?;
+        let assign = claude::group_media_by_content(&cfg, &items)?;
+        let grouped = assign.len();
+        let items = organizer::regroup(&cfg, items, &assign);
+        Ok(json!({ "items": decorate(&items), "grouped": grouped }))
     })
     .await
 }
@@ -992,6 +1024,7 @@ pub fn run() {
             undo,
             history,
             ai_suggest,
+            ai_group_media,
             integration_status,
             integration_claude_code,
             integration_claude_desktop,
@@ -1026,8 +1059,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Smash! 를 시작하지 못했습니다");
 
-    // 자동 정리를 켜 둔 채 창을 닫으면 창을 숨기기만 하므로(create_main) 앱은 트레이에서 계속 돈다.
-    // 자동 정리가 꺼져 있으면 창을 닫을 때 앱도 끝난다 (1.x 와 같게)
+    // 창을 닫으면 숨기기만 하므로(create_main) 앱은 트레이에서 계속 돈다. 끝내기는 트레이 메뉴의 '종료'.
     app.run(|app, event| match event {
         RunEvent::Exit => {
             if let Some(a) = app.state::<Auto>().0.lock().unwrap().as_ref() {

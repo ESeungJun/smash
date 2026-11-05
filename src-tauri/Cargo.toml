@@ -1,6 +1,6 @@
 [package]
 name = "smash"
-version = "2.1.0"
+version = "2.2.0"
 description = "Smash! 다운로드·문서 폴더를 규칙대로 정리하는 앱"
 authors = ["Haul"]
 edition = "2021"
@@ -24,6 +24,7 @@ tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
+base64 = "0.22"
 unicode-normalization = "0.1"
 notify = "8"
 dirs = "6"
