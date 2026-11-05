@@ -36,6 +36,7 @@
     undo: () => call('undo'),
     history: () => call('history'),
     suggest: (targetId, unmatched) => call('ai_suggest', { targetId, unmatched }),
+    groupMedia: (items) => call('ai_group_media', { items }),
     integrationStatus: () => call('integration_status'),
     registerClaudeCode: (locationIds) => call('integration_claude_code', { locationIds: locationIds ?? null }),
     registerClaudeDesktop: () => call('integration_claude_desktop'),

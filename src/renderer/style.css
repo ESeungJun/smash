@@ -94,15 +94,26 @@ b { font-weight: 600; }
 .brand-sub { font-size: 12px; color: var(--muted); }
 .side-label { font-size: 12px; color: var(--muted); padding: 0 10px 6px; }
 .targets { display: flex; flex-direction: column; gap: 2px; overflow: auto; }
+.target-row { display: flex; align-items: center; border-radius: var(--radius-control); }
+.target-row:hover { background: var(--hover); }
+.target-row.active { background: var(--raised); }
 .target-btn {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 32px;
-  text-align: left; border: 0; background: transparent; padding: 0 10px; border-radius: var(--radius-control);
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: 32px;
+  text-align: left; border: 0; background: transparent; padding: 0 4px 0 10px; border-radius: var(--radius-control); color: inherit;
 }
-.target-btn span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.target-btn:hover { background: var(--hover); }
-.target-btn.active { background: var(--raised); }
+.target-btn span:first-child { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.link-badge { font-size: 11px; line-height: 18px; color: var(--muted); flex: none; max-width: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 빼기 버튼: 마우스를 올리거나 키보드로 오면 보인다 */
+.target-x {
+  flex: none; height: 24px; min-width: 24px; margin-right: 4px; padding: 0 6px; border: 0; border-radius: 4px;
+  background: transparent; color: var(--muted); font-size: 14px; line-height: 1; opacity: 0;
+}
+.target-row:hover .target-x, .target-x:focus-visible, .target-x.armed { opacity: 1; }
+.target-x:hover { background: var(--surface); color: var(--negative); }
+.target-x.armed { background: var(--negative); color: #fff; font-size: 12px; font-weight: 600; }
+@media (hover: none) { .target-x { opacity: 1; } }
 .auto-badge { font-size: 12px; line-height: 18px; padding: 0 6px; border-radius: 4px; background: var(--surface); color: var(--muted); flex: none; }
-.target-btn.active .auto-badge { background: var(--surface); }
+.target-row.active .auto-badge { background: var(--surface); }
 #add-target { align-self: flex-start; margin: 6px 0 0 2px; }
 .side-foot { margin-top: auto; }
 .claude-pill {
@@ -341,3 +352,19 @@ details.run summary::-webkit-details-marker { display: none; }
   border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -2px; margin-right: 6px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- 폴더 설정 · 규칙 세트 제안 · 내용 묶기 ---------- */
+.block-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.target-card { padding-top: 6px; padding-bottom: 6px; }
+.target-card .setting-row .muted, .vision-row .muted { max-width: 560px; }
+.target-card select { max-width: 260px; }
+.rule-card.readonly { grid-template-columns: minmax(0, 1fr); opacity: .85; }
+.linked-head { margin-top: 20px; }
+.proposal { display: grid; gap: 10px; }
+.proposal h3, .proposal p { margin: 0; }
+.proposal-list { display: grid; border: 1px solid var(--border); border-radius: var(--radius-control); overflow: hidden; }
+.proposal-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px 12px; border-top: 1px solid var(--rule); cursor: pointer; }
+.proposal-row:first-child { border-top: 0; }
+.proposal-row:hover { background: var(--hover); }
+.proposal-row input { margin-top: 3px; }
+.rule-sentence.before { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--muted); font-size: 12px; margin-top: 2px; }

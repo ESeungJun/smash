@@ -22,6 +22,8 @@ const state = {
   folderItems: new Map(), // 트리 폴더 경로 → 그 아래 항목 id들
   busy: false,
   draft: null, // 편집 중인 규칙
+  proposal: null, // Claude가 만든 규칙 세트 { summary, changes, picked:Set }
+  removeArmed: null, // 사이드바에서 빼기 확인을 기다리는 폴더 id
   folders: [],
   integration: null,
   update: null,
@@ -84,17 +86,25 @@ function switchTab(name) {
 
 function renderTargets() {
   $('#targets').innerHTML = state.config.targets
-    .map(
-      (t) => `<button class="target-btn ${t.id === state.targetId ? 'active' : ''}" data-id="${esc(t.id)}" title="${esc(t.path)}">
-        <span>${esc(targetName(t))}</span>${t.auto ? `<span class="auto-badge" title="${L('자동 정리 켜짐', 'Auto-tidy on')}">${L('자동', 'Auto')}</span>` : ''}
-      </button>`,
-    )
+    .map((t) => {
+      const armed = state.removeArmed === t.id;
+      const base = t.link && state.config.targets.find((x) => x.id === t.link);
+      return `<div class="target-row ${t.id === state.targetId ? 'active' : ''}">
+        <button class="target-btn" data-id="${esc(t.id)}" title="${esc(t.path)}">
+          <span>${esc(targetName(t))}</span>${base ? `<span class="link-badge" title="${L(`${esc(targetName(base))} 규칙을 같이 써요`, `Shares rules with ${esc(targetName(base))}`)}">↗ ${esc(targetName(base))}</span>` : ''}${
+            t.auto ? `<span class="auto-badge" title="${L('자동 정리 켜짐', 'Auto-tidy on')}">${L('자동', 'Auto')}</span>` : ''
+          }
+        </button>
+        <button class="target-x ${armed ? 'armed' : ''}" data-remove-target="${esc(t.id)}" title="${L('목록에서 빼기 (파일은 그대로)', 'Remove from the list (files stay put)')}" aria-label="${L(`${esc(targetName(t))} 목록에서 빼기`, `Remove ${esc(targetName(t))} from the list`)}">${armed ? L('빼기?', 'Remove?') : '×'}</button>
+      </div>`;
+    })
     .join('');
 }
 
 async function selectTarget(id) {
   state.targetId = id;
   state.draft = null;
+  state.proposal = null;
   renderTargets();
   const t = currentTarget();
   $('#target-path').textContent = t ? targetName(t) : L('폴더를 추가해 주세요', 'Add a folder');
@@ -116,29 +126,59 @@ async function addTarget() {
   toast(L('폴더를 추가했어요. 규칙 탭에서 정리 규칙을 만들어 보세요.', 'Folder added. Make some rules in the Rules tab.'));
 }
 
-let removeArmed = false;
-async function removeTarget() {
-  const btn = $('#remove-target');
-  if (!removeArmed) {
-    removeArmed = true;
-    btn.textContent = L('한 번 더 누르면 목록에서 뺍니다 (파일은 그대로)', 'Click again to remove it from the list (files stay put)');
-    setTimeout(() => {
-      removeArmed = false;
-      btn.textContent = L('이 폴더를 목록에서 빼기', 'Remove this folder from the list');
+let removeArmTimer;
+/** 폴더를 목록에서 뺀다. 한 번 누르면 확인 상태, 3초 안에 한 번 더 누르면 뺀다. 파일은 건드리지 않는다. */
+async function removeTarget(id) {
+  const t = state.config.targets.find((x) => x.id === id);
+  if (!t) return;
+  if (state.removeArmed !== id) {
+    state.removeArmed = id;
+    renderTargets();
+    syncRemoveButton();
+    clearTimeout(removeArmTimer);
+    removeArmTimer = setTimeout(() => {
+      state.removeArmed = null;
+      renderTargets();
+      syncRemoveButton();
     }, 3000);
     return;
   }
-  removeArmed = false;
-  btn.textContent = L('이 폴더를 목록에서 빼기', 'Remove this folder from the list');
-  state.config.targets = state.config.targets.filter((t) => t.id !== state.targetId);
+  clearTimeout(removeArmTimer);
+  state.removeArmed = null;
+  state.config.targets = state.config.targets.filter((x) => x.id !== id);
+  // 이 폴더를 기준으로 쓰던 폴더는 연결을 끊는다(규칙은 각자 그대로)
+  state.config.targets.forEach((x) => {
+    if (x.link === id) x.link = '';
+  });
   await saveConfig();
+  toast(L(`${targetName(t)}을(를) 목록에서 뺐어요. 파일은 그대로예요.`, `Removed ${targetName(t)} from the list. Files stay put.`));
+  if (state.targetId !== id) {
+    // 지금 보는 폴더가 뺀 폴더를 기준으로 쓰고 있었을 수 있어 계획을 다시 짠다
+    syncRemoveButton();
+    renderRules();
+    return doScan();
+  }
   state.targetId = state.config.targets[0]?.id || null;
   if (state.targetId) await selectTarget(state.targetId);
   else {
     state.scan = null;
     renderTargets();
     renderPreview();
+    renderRules();
+    $('#target-path').textContent = L('폴더를 추가해 주세요', 'Add a folder');
+    $('#target-sub').textContent = '';
   }
+  syncRemoveButton();
+}
+
+function syncRemoveButton() {
+  const btn = $('#remove-target');
+  if (!btn) return;
+  btn.hidden = !state.targetId;
+  btn.textContent =
+    state.removeArmed && state.removeArmed === state.targetId
+      ? L('한 번 더 누르면 목록에서 뺍니다 (파일은 그대로)', 'Click again to remove it from the list (files stay put)')
+      : L('이 폴더를 목록에서 빼기', 'Remove this folder from the list');
 }
 
 // ---------- 미리보기 (트리) ----------
@@ -302,7 +342,10 @@ function renderPreview() {
         <div class="block-title">${L('정리하면 이렇게 돼요', 'After tidying')}<span class="count">${items.length}</span></div>
         <div class="block-sub">${L('폴더 옆 ▾를 누르면 접고 펼 수 있어요. 체크를 풀면 그 파일은 그대로 둬요.', 'Click ▾ next to a folder to collapse it. Uncheck a file to leave it where it is.')}</div>
       </div>
-      ${items.length ? `<button class="link" id="toggle-all">${L('전체 선택/해제', 'Select all / none')}</button>` : ''}
+      <div class="block-actions">
+        ${visionButton(items)}
+        ${items.length ? `<button class="link" id="toggle-all">${L('전체 선택/해제', 'Select all / none')}</button>` : ''}
+      </div>
     </div>
     ${
       items.length
@@ -338,6 +381,46 @@ function renderPreview() {
       </div>`
     : '';
   updateApplyButton();
+}
+
+const MEDIA_EXT = /\.(jpe?g|png|gif|heic|heif|webp|tiff?|bmp|mp4|mov|m4v|avi|mkv|webm)$/i;
+const mediaItems = (items) => items.filter((it) => it.action === 'move' && it.groupBase && MEDIA_EXT.test(it.name));
+
+function visionButton(items) {
+  const n = mediaItems(items).length;
+  if (!n || !state.config.ai?.vision || !cliReady()) return '';
+  return `<button class="ghost small" id="ai-group" title="${L('사진·동영상 썸네일을 Claude에 보여 주고 비슷한 것끼리 하위 폴더로 묶어요', 'Shows photo & video thumbnails to Claude and groups similar ones into subfolders')}">${L(
+    `Claude로 사진·영상 ${n}개 내용 보고 묶기`,
+    `Group ${n} photos & videos by content`,
+  )}</button>`;
+}
+
+async function aiGroupMedia() {
+  const btn = $('#ai-group');
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span>${L('Claude가 사진을 보는 중…', 'Claude is looking at them…')}`;
+  // 오래 걸리는 동안 폴더를 바꾸거나 다시 보기를 누르면 그 결과는 버린다(다른 폴더 계획을 덮어쓰지 않게)
+  const scan = state.scan;
+  try {
+    const res = await tidy.groupMedia(scan.items);
+    if (state.scan !== scan) return;
+    state.scan.items = res.items;
+    // 다시 계획하면서 빠진 항목(이미 그 자리에 있음)은 체크 목록에서도 정리한다
+    const ids = new Set(allPlanItems().map((i) => i.id));
+    state.unchecked = new Set([...state.unchecked].filter((id) => ids.has(id)));
+    renderPreview();
+    toast(
+      res.grouped
+        ? L(`Claude가 ${res.grouped}개를 내용별로 묶었어요. 트리에서 확인하세요.`, `Claude grouped ${res.grouped} by content. Check the tree.`)
+        : L('Claude가 묶을 만한 걸 찾지 못했어요.', "Claude didn't find anything to group."),
+      4000,
+    );
+  } catch (err) {
+    if (state.scan !== scan || !$('#ai-group')) return;
+    $('#ai-group').disabled = false;
+    $('#ai-group').textContent = L('다시 시도', 'Try again');
+    toast(L(`묶기 실패: ${err.message}`, `Grouping failed: ${err.message}`), 6000);
+  }
 }
 
 function updateApplyButton() {
@@ -401,9 +484,9 @@ function chipList(values, max = 5) {
   return values.length > max ? `${shown}<span class="chip more">+${values.length - max}</span>` : shown;
 }
 
-function destText(dest) {
+function destText(dest, owner) {
   if (!dest) return '';
-  const t = currentTarget();
+  const t = owner || currentTarget();
   const rootAbs = t ? expand(t.path) : '';
   const isAbs = dest.startsWith('~') || dest.startsWith('/') || /^[A-Za-z]:/.test(dest);
   const full = isAbs ? expand(dest) : rootAbs + state.sep + dest.split('/').join(state.sep);
@@ -415,7 +498,10 @@ function destText(dest) {
   return contract(full);
 }
 
-function ruleSentence(r) {
+const groupLabel = (g) =>
+  ({ auto: L('용도·이름·시간별로 나눠서', 'split by purpose, name & time'), month: L('연·월별로 나눠서', 'split by month') })[g] || '';
+
+function ruleSentence(r, owner) {
   const parts = [];
   if (r.match.olderThanDays) parts.push(`<span class="chip soft">${L(`${r.match.olderThanDays}일 지난`, `older than ${r.match.olderThanDays} days`)}</span>`);
   if (r.match.nameIncludes.length) parts.push(L(`이름에 ${chipList(r.match.nameIncludes.map((w) => `"${w}"`), 3)} 가 들어간`, `with ${chipList(r.match.nameIncludes.map((w) => `"${w}"`), 3)} in the name`));
@@ -432,11 +518,21 @@ function ruleSentence(r) {
   const how =
     r.action === 'trash'
       ? L('<b class="to trash">휴지통</b>으로 보내요', 'go to the <b class="to trash">Trash</b>')
-      : L(`<b class="to">${esc(destText(r.dest))}</b> 로 옮겨요`, `move to <b class="to">${esc(destText(r.dest))}</b>`);
-  return `${what} → ${how}`;
+      : L(`<b class="to">${esc(destText(r.dest, owner))}</b> 로 옮겨요`, `move to <b class="to">${esc(destText(r.dest, owner))}</b>`);
+  const sub = r.action === 'move' && groupLabel(r.group) ? ` <span class="chip soft">${groupLabel(r.group)}</span>` : '';
+  return `${what} → ${how}${sub}`;
 }
 
-function ruleCard(r, i, total) {
+function ruleCard(r, i, total, owner) {
+  if (owner) {
+    // 기준 폴더 규칙: 여기서는 보기만 한다
+    return `<div class="rule-card readonly ${r.enabled ? '' : 'disabled'}">
+      <div class="rule-body">
+        <div class="rule-name">${esc(r.name)}${r.enabled ? '' : ` <span class="muted">${L('(꺼짐)', '(off)')}</span>`}</div>
+        <div class="rule-sentence">${ruleSentence(r, owner)}</div>
+      </div>
+    </div>`;
+  }
   return `<div class="rule-card ${r.enabled ? '' : 'disabled'}">
     <div class="rule-body">
       <div class="rule-name">${esc(r.name)}</div>
@@ -455,7 +551,7 @@ function ruleCard(r, i, total) {
 }
 
 function newDraft(from) {
-  const r = from || { name: '', match: { extensions: [], nameIncludes: [], olderThanDays: 0 }, action: 'move', dest: '' };
+  const r = from || { name: '', match: { extensions: [], nameIncludes: [], olderThanDays: 0 }, action: 'move', dest: '', group: 'auto' };
   return {
     id: from?.id || null,
     name: r.name,
@@ -464,6 +560,7 @@ function newDraft(from) {
     days: r.match.olderThanDays || 0,
     action: r.action,
     dest: r.dest || '',
+    group: r.group ?? 'auto',
     matches: null,
   };
 }
@@ -474,7 +571,14 @@ const draftRule = (d) => ({
   match: { extensions: d.exts, nameIncludes: d.words, olderThanDays: d.days },
   action: d.action,
   dest: d.action === 'trash' ? '' : d.dest.trim(),
+  group: d.action === 'trash' ? '' : d.group,
 });
+
+const groupOptions = () => [
+  ['', L('안 나눔', 'None')],
+  ['auto', L('자동 (용도·이름·시간)', 'Auto (purpose, name, time)')],
+  ['month', L('연·월', 'By month')],
+];
 
 const dayOptions = () => [
   [0, L('바로', 'Right away')],
@@ -551,6 +655,14 @@ function editorHtml() {
                 <button type="button" class="ghost small" id="pick-dest">${L('폴더 고르기…', 'Choose folder…')}</button>
               </div>
               <div class="dest-preview" id="dest-preview">${destPreviewHtml(d)}</div>
+            </div>
+            <div class="field">
+              <div class="field-label">${L('그 폴더 안에서 한 번 더 나누기', 'Split again inside that folder')}</div>
+              <div class="seg">${groupOptions().map(([v, l]) => `<button type="button" data-group="${v}" class="${d.group === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+              <div class="hint">${L(
+                '자동: 영수증·계약서·스크린샷처럼 용도가 보이는 이름, 이름이 비슷한 파일, 같은 날 찍은 사진끼리 하위 폴더를 만들어요. 이미 만들어 둔 하위 폴더 이름과 맞으면 그 폴더로 넣어요.',
+                'Auto: makes subfolders for names that show a purpose (receipts, contracts, screenshots), files with similar names, and photos taken the same day. Files go into an existing subfolder when its name matches.',
+              )}</div>
             </div>`
           : `<p class="hint">${L('휴지통으로 보내요. 영구 삭제는 하지 않아요.', 'They go to the Trash. Nothing is deleted for good.')}</p>`
       }
@@ -589,35 +701,116 @@ function renderEditor(focusId) {
   refreshMatches();
 }
 
+const linkBase = (t) => (t?.link ? state.config.targets.find((x) => x.id === t.link) : null);
+
+function targetCardHtml(t) {
+  const base = linkBase(t);
+  const followers = state.config.targets.filter((x) => x.link === t.id);
+  const bases = state.config.targets.filter((x) => x.id !== t.id && !x.link);
+  const linkControl = followers.length
+    ? `<div class="muted">${L(
+        `${followers.map((f) => esc(targetName(f))).join(', ')}이(가) 이 폴더를 기준으로 써요. 기준 폴더는 다른 폴더에 다시 연결할 수 없어요.`,
+        `${followers.map((f) => esc(targetName(f))).join(', ')} use this folder as their base, so it can't be linked to another one.`,
+      )}</div>`
+    : `<select id="t-link">
+        <option value="">${L('이 폴더 규칙만 쓰기', 'Only this folder’s rules')}</option>
+        ${bases.map((b) => `<option value="${esc(b.id)}" ${base?.id === b.id ? 'selected' : ''}>${L(`${esc(targetName(b))} 규칙도 같이 쓰기`, `Also use ${esc(targetName(b))}’s rules`)}</option>`).join('')}
+      </select>`;
+  return `<div class="card target-card">
+    <div class="setting-row">
+      <div><b>${L('하위 폴더까지 정리', 'Include subfolders')}</b><div class="muted">${L(
+        '켜면 이 폴더 안에 만들어 둔 폴더 속 파일도 규칙대로 다시 정리해요. 앱·사진 보관함 같은 꾸러미와 개발 프로젝트 폴더(.git, package.json 등)는 건드리지 않아요.',
+        'When on, files inside folders you made here are re-sorted by the rules too. App/library bundles and code projects (.git, package.json, …) are left alone.',
+      )}</div></div>
+      ${switchHtml('id="t-recursive"', t.recursive)}
+    </div>
+    <div class="setting-row">
+      <div><b>${L('다른 폴더와 연결', 'Link to another folder')}</b><div class="muted">${L(
+        '연결하면 이 폴더 규칙 다음에 기준 폴더 규칙을 이어서 써요. 파일이 기준 폴더의 같은 분류 트리로 모여요.',
+        'Linked folders apply their own rules first, then the base folder’s rules, so files land in the base folder’s tree.',
+      )}</div></div>
+      ${linkControl}
+    </div>
+  </div>`;
+}
+
+function proposalHtml() {
+  const p = state.proposal;
+  if (!p) return '';
+  const owner = (id) => state.config.targets.find((t) => t.id === id);
+  const rows = p.changes
+    .map((c, i) => {
+      const o = owner(c.ownerId);
+      const tag =
+        c.op === 'update'
+          ? `<span class="tag warn">${L('고침', 'Update')}</span>`
+          : `<span class="tag new">${L('새 규칙', 'New')}</span>`;
+      const where = `<span class="muted">${esc(c.ownerName)} · ${c.op === 'update' ? L('제자리', 'in place') : c.position === 'bottom' ? L('맨 아래', 'at the bottom') : L('맨 위', 'at the top')}</span>`;
+      return `<label class="proposal-row">
+        <input type="checkbox" data-proposal="${i}" ${p.picked.has(i) ? 'checked' : ''} />
+        <div>
+          <div class="rule-name">${tag} ${esc(c.rule.name)} ${where}</div>
+          <div class="rule-sentence">${ruleSentence(c.rule, o)}</div>
+          ${c.before ? `<div class="rule-sentence before">${L('지금', 'Now')}: ${ruleSentence(c.before, o)}</div>` : ''}
+        </div>
+      </label>`;
+    })
+    .join('');
+  return `<div class="card proposal" id="proposal">
+    <h3>${L('Claude가 만든 규칙 세트', 'Rule set from Claude')} <span class="muted">${p.changes.length}</span></h3>
+    ${p.summary ? `<p>${esc(p.summary)}</p>` : ''}
+    <div class="proposal-list">${rows}</div>
+    <div class="card-actions">
+      <button class="primary small" id="proposal-save" ${p.picked.size ? '' : 'disabled'}>${L(`고른 ${p.picked.size}개 저장`, `Save ${p.picked.size} selected`)}</button>
+      <button class="ghost small" id="proposal-cancel">${L('버리기', 'Discard')}</button>
+    </div>
+  </div>`;
+}
+
 function renderRules() {
   const t = currentTarget();
+  syncRemoveButton();
   if (!t) {
     $('#rules-top').innerHTML = '';
     $('#rules').innerHTML = '';
     return;
   }
   const ai = cliReady();
-  $('#rules-top').innerHTML = `<div class="nl-card">
-    <div class="nl-title">${L('말로 규칙 만들기', 'Describe a rule')}</div>
+  const base = linkBase(t);
+  $('#rules-top').innerHTML = `${targetCardHtml(t)}
+  <div class="nl-card">
+    <div class="nl-title">${L('말로 규칙 만들기', 'Describe your rules')}</div>
     <div class="inline">
-      <input id="nl-text" type="text" placeholder="${L("예: 이름에 '계약서'가 들어간 PDF는 문서/계약서로 옮겨줘", "e.g. Move PDFs with 'invoice' in the name to Documents/Invoices")}" ${ai ? '' : 'disabled'} />
+      <input id="nl-text" type="text" placeholder="${L('예: 사진은 게임 스샷·카톡·카메라로 나누고, 문서는 계약서·영수증·과제로 정리해줘', 'e.g. Split photos into game shots, chats and camera; sort documents into contracts, receipts and homework')}" ${ai ? '' : 'disabled'} />
       <button class="ghost" id="nl-make" ${ai ? '' : 'disabled'}>${L('Claude로 만들기', 'Make it with Claude')}</button>
     </div>
     <div class="hint">${
       ai
-        ? L('Claude가 규칙을 채워 주면 확인하고 저장하면 돼요.', 'Claude fills in the rule. Check it and save.')
+        ? L(
+            '지금 규칙, 폴더 목록, 파일 종류별 개수와 파일 이름 일부(최대 60개)를 Claude에 보내 대분류·소분류 규칙을 한 벌로 만들어요. 파일 내용은 안 보내요. 겹치는 규칙은 새로 만들지 않고 고치는 쪽으로 보여 줘요.',
+            'Sends your current rules, folder list, file counts by type and up to 60 file names (never contents) to Claude to make a full set of categories and subcategories. Overlapping rules show up as updates, not duplicates.',
+          )
         : L('Claude Code CLI가 있으면 말로 규칙을 만들 수 있어요. (자동 정리 · Claude 탭)', 'With the Claude Code CLI you can describe rules in words. (Auto-tidy · Claude tab)')
     }</div>
   </div>
+  ${proposalHtml()}
   <div class="panel-head">
     <p class="hint">${L('위에 있는 규칙부터 적용돼요. 파일 하나에는 처음 맞는 규칙 하나만 적용돼요.', 'Rules apply from the top. Each file gets only the first rule it matches.')}</p>
     <button id="add-rule" class="primary small">${L('+ 직접 만들기', '+ New rule')}</button>
   </div>`;
   const d = state.draft;
   const cards = t.rules.map((r, i) => (d && d.id === r.id ? editorHtml() : ruleCard(r, i, t.rules.length))).join('');
-  $('#rules').innerHTML =
+  const own =
     (d && !d.id ? editorHtml() : '') +
     (t.rules.length ? `<div class="rule-list">${cards}</div>` : d ? '' : `<div class="block"><div class="empty">${L('아직 규칙이 없어요. 말로 만들거나 직접 만들어 보세요.', 'No rules yet. Describe one or make one yourself.')}</div></div>`);
+  const shared = base
+    ? `<div class="panel-head linked-head">
+        <p class="hint">${L(`이어서 <b>${esc(targetName(base))}</b> 폴더 규칙을 같이 써요. 목적지는 ${esc(targetName(base))} 폴더 기준이에요.`, `Then <b>${esc(targetName(base))}</b>’s rules apply, with destinations inside ${esc(targetName(base))}.`)}</p>
+        <button class="ghost small" data-goto-target="${esc(base.id)}">${L(`${esc(targetName(base))}에서 고치기`, `Edit in ${esc(targetName(base))}`)}</button>
+      </div>
+      ${base.rules.length ? `<div class="rule-list">${base.rules.map((r, i) => ruleCard(r, i, base.rules.length, base)).join('')}</div>` : `<div class="block"><div class="empty">${L('기준 폴더에 규칙이 없어요.', 'The base folder has no rules.')}</div></div>`}`
+    : '';
+  $('#rules').innerHTML = own + shared;
   if (d) refreshMatches();
 }
 
@@ -672,19 +865,58 @@ async function makeRuleFromText() {
   btn.disabled = true;
   btn.innerHTML = `<span class="spinner"></span>${L('만드는 중…', 'Making…')}`;
   try {
-    const rule = await tidy.ruleFromText(state.targetId, text);
-    state.draft = { ...newDraft(rule), id: null };
+    const asked = state.targetId;
+    const res = await tidy.ruleFromText(asked, text);
+    if (state.targetId !== asked) return;
+    state.proposal = { ...res, picked: new Set(res.changes.map((_, i) => i)) };
+    state.draft = null;
     renderRules();
-    $('#editor')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    toast(L('Claude가 규칙을 채웠어요. 확인하고 저장하세요.', 'Claude filled in the rule. Check it and save.'));
+    $('#nl-text').value = text;
+    $('#proposal')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    toast(L('Claude가 규칙 세트를 만들었어요. 고를 것만 남기고 저장하세요.', 'Claude made a rule set. Keep the ones you want and save.'));
   } catch (err) {
-    toast(L(`규칙 만들기 실패: ${err.message}`, `Couldn't make the rule: ${err.message}`), 6000);
+    toast(L(`규칙 만들기 실패: ${err.message}`, `Couldn't make the rules: ${err.message}`), 6000);
   } finally {
     if ($('#nl-make')) {
       $('#nl-make').disabled = false;
       $('#nl-make').textContent = L('Claude로 만들기', 'Make it with Claude');
     }
   }
+}
+
+/** 고른 제안을 규칙에 넣는다: 고침은 제자리에서 바꾸고, 새 규칙은 제안 순서대로 맨 위/맨 아래에. */
+async function saveProposal() {
+  const p = state.proposal;
+  if (!p) return;
+  const picked = p.changes.filter((_, i) => p.picked.has(i));
+  const tops = new Map();
+  let updated = 0;
+  let added = 0;
+  for (const c of picked) {
+    const owner = state.config.targets.find((t) => t.id === c.ownerId);
+    if (!owner) continue;
+    if (c.op === 'update') {
+      const i = owner.rules.findIndex((r) => r.id === c.rule.id);
+      if (i >= 0) {
+        owner.rules[i] = { ...c.rule, enabled: owner.rules[i].enabled };
+        updated += 1;
+        continue;
+      }
+    }
+    const rule = { ...c.rule, id: `r_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, enabled: true };
+    added += 1;
+    if (c.position === 'bottom') owner.rules.push(rule);
+    else {
+      if (!tops.has(owner)) tops.set(owner, []);
+      tops.get(owner).push(rule);
+    }
+  }
+  for (const [owner, rules] of tops) owner.rules.unshift(...rules);
+  state.proposal = null;
+  await saveConfig();
+  renderRules();
+  await doScan();
+  toast(L(`규칙 ${added}개를 넣고 ${updated}개를 고쳤어요. 미리보기에서 확인하세요.`, `Added ${added} rules and updated ${updated}. Check the preview.`), 4000);
 }
 
 async function pickDest() {
@@ -889,6 +1121,13 @@ function renderSettings() {
           <select id="ai-model">${['haiku', 'sonnet', 'opus'].map((m) => `<option value="${m}" ${m === model ? 'selected' : ''}>${m}</option>`).join('')}</select>
         </label>
       </div>
+      <div class="setting-row vision-row">
+        <div><b>${L('사진·동영상 내용으로 묶기', 'Group photos & videos by content')}</b><div class="muted">${L(
+          '켜면 미리보기에 "내용 보고 묶기" 버튼이 생겨요. 누를 때만 줄인 썸네일(긴 변 384px, 동영상은 한 장면)과 파일 이름, 이미 있는 하위 폴더 이름을 Claude에 보내서 게임·음식·풍경처럼 비슷한 것끼리 하위 폴더로 묶어요. 원본 파일은 보내지 않아요.',
+          'Adds a "Group by content" button to the preview. Only when you press it, small thumbnails (384px, one frame per video), file names and existing subfolder names go to Claude to group similar ones (games, food, scenery). Original files are never sent.',
+        )}</div></div>
+        ${switchHtml('id="set-vision"', !!cfg.ai?.vision)}
+      </div>
     </div>
 
     <div class="card">
@@ -953,9 +1192,10 @@ function handleDraftClick(el) {
   const t = currentTarget();
   if (el.dataset.cat) {
     const cat = state.categories.find((c) => c.key === el.dataset.cat);
-    const all = cat.extensions.every((x) => d.exts.includes(x));
-    d.exts = all ? d.exts.filter((x) => !cat.extensions.includes(x)) : [...new Set([...d.exts, ...cat.extensions])];
-    if (!all) {
+    // 일부라도 골라져 있으면(칩이 켜져 보이면) 누를 때 빼고, 하나도 없을 때만 더한다
+    const any = cat.extensions.some((x) => d.exts.includes(x));
+    d.exts = any ? d.exts.filter((x) => !cat.extensions.includes(x)) : [...new Set([...d.exts, ...cat.extensions])];
+    if (!any) {
       if (!d.name.trim() || state.categories.some((c) => c.label === d.name)) d.name = cat.label;
       if (cat.key === 'installer') d.action = 'trash';
       else if (!d.dest && cat.folder) d.dest = expand(t.path) === expand('~/Documents') ? cat.folder : `~/Documents/${cat.folder}`;
@@ -979,6 +1219,11 @@ function handleDraftClick(el) {
     renderEditor();
     return true;
   }
+  if (el.dataset.group !== undefined && el.closest('#editor')) {
+    d.group = el.dataset.group;
+    renderEditor();
+    return true;
+  }
   return false;
 }
 
@@ -989,6 +1234,8 @@ document.addEventListener('click', async (e) => {
   if (el.dataset.goto) return switchTab(el.dataset.goto);
   if (el.dataset.url) return tidy.openUrl(el.dataset.url);
   if (el.classList.contains('target-btn')) return selectTarget(el.dataset.id);
+  if (el.dataset.removeTarget) return removeTarget(el.dataset.removeTarget);
+  if (el.dataset.gotoTarget) return selectTarget(el.dataset.gotoTarget);
   if (el.dataset.collapse) {
     const key = el.dataset.collapse;
     if (state.collapsed.has(key)) state.collapsed.delete(key);
@@ -1022,7 +1269,12 @@ document.addEventListener('click', async (e) => {
       return renderPreview();
     }
     case 'add-target': return addTarget();
-    case 'remove-target': return removeTarget();
+    case 'remove-target': return removeTarget(state.targetId);
+    case 'ai-group': return aiGroupMedia();
+    case 'proposal-save': return saveProposal();
+    case 'proposal-cancel':
+      state.proposal = null;
+      return renderRules();
     case 'add-rule': return openEditor(null);
     case 'nl-make': return makeRuleFromText();
     case 'cancel-rule':
@@ -1094,6 +1346,45 @@ document.addEventListener('change', async (e) => {
     const ids = state.folderItems.get(el.dataset.folder) || [];
     ids.forEach((id) => (el.checked ? state.unchecked.delete(id) : state.unchecked.add(id)));
     return renderPreview();
+  }
+  if (el.dataset.proposal !== undefined && state.proposal) {
+    const i = Number(el.dataset.proposal);
+    if (el.checked) state.proposal.picked.add(i);
+    else state.proposal.picked.delete(i);
+    const btn = $('#proposal-save');
+    btn.disabled = !state.proposal.picked.size;
+    btn.textContent = L(`고른 ${state.proposal.picked.size}개 저장`, `Save ${state.proposal.picked.size} selected`);
+    return;
+  }
+  if (el.id === 't-recursive') {
+    const t = currentTarget();
+    t.recursive = el.checked;
+    await saveConfig();
+    toast(
+      el.checked
+        ? L(`${targetName(t)} 안의 하위 폴더 파일도 정리해요. 미리보기에서 꼭 확인하세요.`, `Files in ${targetName(t)}'s subfolders are included. Check the preview first.`)
+        : L('이제 하위 폴더는 건드리지 않아요.', 'Subfolders are left alone now.'),
+      4000,
+    );
+    return doScan();
+  }
+  if (el.id === 't-link') {
+    const t = currentTarget();
+    t.link = el.value;
+    await saveConfig();
+    renderRules();
+    return doScan();
+  }
+  if (el.id === 'set-vision') {
+    state.config.ai = { ...(state.config.ai || {}), vision: el.checked };
+    await saveConfig();
+    if (state.scan) renderPreview();
+    return toast(
+      el.checked
+        ? L('켰어요. 미리보기에서 "내용 보고 묶기"를 누를 때만 썸네일을 보내요.', 'On. Thumbnails are sent only when you press "Group by content" in the preview.')
+        : L('껐어요. 사진 내용은 Claude에 보내지 않아요.', 'Off. No photo content goes to Claude.'),
+      4000,
+    );
   }
   if (el.dataset.ruleToggle) {
     const r = currentTarget().rules.find((x) => x.id === el.dataset.ruleToggle);
