@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "메인 창과 잔소리 배너. 앱 명령과 이벤트만 쓴다(파일·셸 권한은 Rust 쪽에서만).",
+  "windows": ["main", "nag"],
+  "permissions": ["core:default"]
+}

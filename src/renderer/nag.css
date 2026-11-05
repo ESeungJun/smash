@@ -30,6 +30,8 @@ body { display: grid; place-items: start center; padding: 8px 32px 0; box-sizing
 .title { font-weight: 800; font-size: 16px; line-height: 22px; color: var(--accent); }
 .sub { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .banner:hover .sub { color: var(--text); }
+/* 창이 뜨면서 웹뷰가 링크에 포커스를 줘서 파란 테두리가 생긴다. 배너는 마우스로만 누른다 */
+.banner:focus { outline: none; }
 
 @keyframes drop {
   0% { opacity: 0; transform: translateY(-120%); }
