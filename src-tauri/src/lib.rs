@@ -656,7 +656,8 @@ async fn check_update(app: &AppHandle) -> bool {
         return false; // 이미 받아 둔 것이 있으면 설치를 기다린다
     }
     {
-        let mut s = app.state::<UpdateStatus>().0.lock().unwrap();
+        let status = app.state::<UpdateStatus>();
+        let mut s = status.0.lock().unwrap();
         if s.checking {
             return false; // 트레이·설정 화면·주기 확인이 겹치면 앞의 것을 기다린다
         }
