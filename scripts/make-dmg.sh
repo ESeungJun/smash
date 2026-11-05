@@ -10,6 +10,7 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
+mkdir -p "$(dirname "$out")"
 rm -f "$out"
 for i in 1 2 3 4 5; do
   if hdiutil create -volname "Smash!" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$out"; then
