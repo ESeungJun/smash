@@ -2,7 +2,6 @@
 <html lang="ko">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:" />
     <title>Smash!</title>
     <link rel="stylesheet" href="style.css" />
   </head>
@@ -72,6 +71,7 @@
 
     <datalist id="folder-list"></datalist>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="tauri-bridge.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

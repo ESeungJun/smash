@@ -1,0 +1,67 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Smash",
+  "mainBinaryName": "smash",
+  "version": "../package.json",
+  "identifier": "dev.haul.smash",
+  "build": {
+    "frontendDist": "../dist-web",
+    "beforeBuildCommand": "node scripts/build-web.js",
+    "beforeDevCommand": "node scripts/build-web.js"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "macOSPrivateApi": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg",
+      "nsis"
+    ],
+    "category": "Productivity",
+    "shortDescription": "Smash! — tidy Downloads and Documents by your rules",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "11.0",
+      "files": {
+        "Resources/ko.lproj/InfoPlist.strings": "../build/lproj/ko.lproj/InfoPlist.strings",
+        "Resources/en.lproj/InfoPlist.strings": "../build/lproj/en.lproj/InfoPlist.strings",
+        "Resources/Base.lproj/InfoPlist.strings": "../build/lproj/Base.lproj/InfoPlist.strings"
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "languages": [
+          "Korean",
+          "English"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUzMTI3MkFCQzI0RjAwNzIKUldSeUFFL0NxM0lTNDBUZGRqdGxaZzhZd0gyMWY3dm5uZFk5L3crb2dydWtmOXFlaTRxZFdXcTMK",
+      "endpoints": [
+        "https://github.com/ESeungJun/smash/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

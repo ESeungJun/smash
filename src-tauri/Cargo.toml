@@ -1,0 +1,46 @@
+[package]
+name = "smash"
+version = "2.0.0"
+description = "Smash! 다운로드·문서 폴더를 규칙대로 정리하는 앱"
+authors = ["Haul"]
+edition = "2021"
+rust-version = "1.80"
+
+[lib]
+name = "smash_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+unicode-normalization = "0.1"
+notify = "8"
+dirs = "6"
+filetime = "0.2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sys-locale = "0.3"
+tokio = { version = "1", features = ["time", "sync"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

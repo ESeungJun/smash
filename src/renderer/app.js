@@ -827,7 +827,7 @@ function renderSettings() {
   const model = cfg.ai?.model || 'sonnet';
   const shellQuote = (v) => (/[\s"'$`\\]/.test(v) ? `"${v.replace(/(["\\$`])/g, '\\$1')}"` : v);
   const cmd = s.launch
-    ? `claude mcp add -s user ${s.mcpName} -e ELECTRON_RUN_AS_NODE=1 -- ${shellQuote(s.launch.command)} ${s.launch.args.map(shellQuote).join(' ')}`
+    ? `claude mcp add -s user ${s.mcpName}${Object.entries(s.launch.env || {}).map(([k, v]) => ` -e ${k}=${shellQuote(v)}`).join('')} -- ${shellQuote(s.launch.command)} ${s.launch.args.map(shellQuote).join(' ')}`
     : '';
   $('#settings').innerHTML = `${autoCard}
     <div class="card">

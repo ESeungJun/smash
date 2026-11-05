@@ -1,0 +1,76 @@
+name: Build
+
+# feature/·bugfix/·develop 에 push 하면 Rust 테스트를 돌리고, 맥·윈도우 설치 파일을 시험 삼아 만든다.
+# 여기서 만든 파일은 서명하지 않는다(임시 서명). 배포는 release.yml 이 맡는다.
+on:
+  push:
+    branches: ['feature/**', 'bugfix/**', 'develop']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Tauri 빌드에 필요한 리눅스 패키지
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # generate_context! 가 dist-web 을 읽는다
+      - run: node scripts/build-web.js
+      # 설정 위치(SMASH_HOME)와 언어가 전역이라 테스트는 하나씩 돈다
+      - run: cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1
+
+  build:
+    needs: test
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, windows-latest]  # Apple 칩 러너가 자주 밀려서 Intel 러너로 유니버설 빌드
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: 설치 파일 (macOS, 임시 서명)
+        if: runner.os == 'macOS'
+        run: |
+          npx tauri build --target universal-apple-darwin --bundles app
+          scripts/make-dmg.sh src-tauri/target/universal-apple-darwin/release/bundle/macos/Smash.app src-tauri/target/universal-apple-darwin/release/bundle/dmg/Smash-macOS.dmg
+      - name: 설치 파일 (Windows)
+        if: runner.os == 'Windows'
+        run: npx tauri build --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smash-${{ runner.os }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/nsis/*.exe
