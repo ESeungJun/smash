@@ -45,5 +45,9 @@
     onAutoRan: on('auto:ran'),
     onTab: on('ui:tab'),
     onConfigChanged: on('config:changed'),
+    updateStatus: () => call('update_status'),
+    checkUpdate: () => call('update_check'),
+    installUpdate: () => call('update_install'),
+    onUpdate: on('update:state'),
   };
 })();

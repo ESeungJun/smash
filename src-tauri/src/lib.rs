@@ -53,6 +53,23 @@ struct NagFolder(Mutex<Option<String>>);
 struct Quitting(AtomicBool);
 #[derive(Default)]
 struct PendingUpdate(Mutex<Option<(Update, Vec<u8>)>>);
+/// 설정 화면과 트레이가 같이 보는 업데이트 상태
+#[derive(Default, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInfo {
+    /// 확인하거나 받는 중
+    checking: bool,
+    /// 이번 실행에서 한 번이라도 확인을 마쳤는지
+    checked: bool,
+    /// 마지막 확인이나 설치가 실패했는지
+    error: bool,
+    /// 찾은 새 버전 (받는 중이거나 받아 둠)
+    latest: Option<String>,
+    /// 받아 둬서 바로 설치할 수 있는지
+    ready: bool,
+}
+#[derive(Default)]
+struct UpdateStatus(Mutex<UpdateInfo>);
 
 fn cfg_or_default() -> Config {
     load_config().unwrap_or_else(|_| config::default_config())
@@ -500,10 +517,22 @@ fn tray_menu(app: &AppHandle, cfg: &Config) -> tauri::Result<tauri::menu::Menu<t
         let text = l(&format!("{name} 자동 정리"), &format!("Auto-tidy {name}"));
         b = b.item(&CheckMenuItem::with_id(app, format!("auto:{}", t.id), text, true, t.auto, None::<&str>)?);
     }
-    b.item(&MenuItem::with_id(app, "tidy", l("지금 전부 정리하기", "Tidy everything now"), true, None::<&str>)?)
+    let info = app.state::<UpdateStatus>().0.lock().unwrap().clone();
+    let version = format!("{APP_NAME} v{}", app.package_info().version);
+    let check = match (&info.latest, info.checking, info.ready) {
+        (_, _, true) => None, // 설치 항목이 맨 위에 있다
+        (Some(v), true, _) => Some((l(&format!("새 버전 v{v} 받는 중…"), &format!("Downloading v{v}…")), false)),
+        (None, true, _) => Some((l("업데이트 확인 중…", "Checking for updates…"), false)),
+        _ => Some((l("업데이트 확인…", "Check for updates…"), true)),
+    };
+    b = b
+        .item(&MenuItem::with_id(app, "tidy", l("지금 전부 정리하기", "Tidy everything now"), true, None::<&str>)?)
         .separator()
-        .item(&MenuItem::with_id(app, "quit", l("종료", "Quit"), true, None::<&str>)?)
-        .build()
+        .item(&MenuItem::with_id(app, "version", version, false, None::<&str>)?);
+    if let Some((text, enabled)) = check {
+        b = b.item(&MenuItem::with_id(app, "update_check", text, enabled, None::<&str>)?);
+    }
+    b.separator().item(&MenuItem::with_id(app, "quit", l("종료", "Quit"), true, None::<&str>)?).build()
 }
 
 fn update_tray(app: &AppHandle) {
@@ -546,6 +575,14 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                     tauri::async_runtime::spawn(tidy_all_now(app.clone()));
                 }
                 "update" => install_update(app),
+                // 결과는 설정 탭의 앱 정보 카드에서 보여 준다 (메뉴 막대 앱은 대화상자가 뒤로 숨기 쉽다)
+                "update_check" => {
+                    show_window(app, Some("settings"));
+                    let handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        check_update(&handle).await;
+                    });
+                }
                 "quit" => {
                     app.state::<Quitting>().0.store(true, Ordering::SeqCst);
                     app.exit(0);
@@ -588,23 +625,94 @@ fn spawn_update_checker(app: AppHandle) {
     thread::spawn(move || {
         thread::sleep(UPDATE_FIRST_CHECK);
         loop {
-            if let Err(e) = tauri::async_runtime::block_on(check_update(&app)) {
-                eprintln!("업데이트 확인 실패: {e}");
+            // 저절로 찾아 받아 둔 새 버전은 한 번 알린다 (받아 두면 설치할 때까지 다시 확인하지 않는다)
+            if tauri::async_runtime::block_on(check_update(&app)) {
+                notify_update(&app);
             }
             thread::sleep(UPDATE_INTERVAL);
         }
     });
 }
 
-async fn check_update(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    if app.state::<PendingUpdate>().0.lock().unwrap().is_some() {
-        return Ok(()); // 이미 받아 둔 것이 있으면 설치를 기다린다
-    }
-    let Some(update) = app.updater()?.check().await? else { return Ok(()) };
-    let bytes = update.download(|_, _| {}, || {}).await?;
-    *app.state::<PendingUpdate>().0.lock().unwrap() = Some((update, bytes));
+fn update_snapshot(app: &AppHandle) -> Value {
+    let info = app.state::<UpdateStatus>().0.lock().unwrap().clone();
+    let mut v = json!(info);
+    v["current"] = json!(app.package_info().version.to_string());
+    v
+}
+
+/// 업데이트 상태를 바꾸고 설정 화면과 트레이에 알린다
+fn set_update(app: &AppHandle, f: impl FnOnce(&mut UpdateInfo)) {
+    f(&mut app.state::<UpdateStatus>().0.lock().unwrap());
+    let _ = app.emit_to("main", "update:state", update_snapshot(app));
     update_tray(app);
-    Ok(())
+}
+
+/// 새 버전이 있으면 받아 둔다. 이번 호출에서 새로 받아 뒀으면 true
+async fn check_update(app: &AppHandle) -> bool {
+    // 잠금은 await 전에 풀어야 spawn 할 수 있다(Send)
+    let pending = app.state::<PendingUpdate>().0.lock().unwrap().is_some();
+    if pending {
+        return false; // 이미 받아 둔 것이 있으면 설치를 기다린다
+    }
+    {
+        let mut s = app.state::<UpdateStatus>().0.lock().unwrap();
+        if s.checking {
+            return false; // 트레이·설정 화면·주기 확인이 겹치면 앞의 것을 기다린다
+        }
+        s.checking = true;
+    }
+    set_update(app, |s| s.error = false);
+    let res: Result<Option<(Update, Vec<u8>)>, String> = async {
+        let Some(update) = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        let v = update.version.clone();
+        set_update(app, |s| s.latest = Some(v));
+        let bytes = update.download(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+        Ok(Some((update, bytes)))
+    }
+    .await;
+    match res {
+        Ok(Some(pending)) => {
+            *app.state::<PendingUpdate>().0.lock().unwrap() = Some(pending);
+            set_update(app, |s| {
+                s.checking = false;
+                s.checked = true;
+                s.ready = true;
+            });
+            true
+        }
+        Ok(None) => {
+            set_update(app, |s| {
+                s.checking = false;
+                s.checked = true;
+                s.latest = None;
+            });
+            false
+        }
+        Err(e) => {
+            eprintln!("업데이트 확인 실패: {e}");
+            set_update(app, |s| {
+                s.checking = false;
+                s.checked = true;
+                s.error = true;
+                s.latest = None;
+            });
+            false
+        }
+    }
+}
+
+fn notify_update(app: &AppHandle) {
+    let Some(v) = app.state::<UpdateStatus>().0.lock().unwrap().latest.clone() else { return };
+    let place = if cfg!(target_os = "macos") { l("메뉴 막대", "menu bar") } else { l("알림 영역", "notification area") };
+    let _ = app
+        .notification()
+        .builder()
+        .title(l(&format!("{APP_NAME} 새 버전(v{v})을 받아 뒀어요"), &format!("{APP_NAME} v{v} is ready")))
+        .body(l(&format!("{place}의 {APP_NAME} 메뉴나 설정에서 설치하면 다시 시작해요."), &format!("Install it from the {APP_NAME} {place} menu or Settings. The app restarts.")))
+        .show();
 }
 
 fn install_update(app: &AppHandle) {
@@ -618,7 +726,11 @@ fn install_update(app: &AppHandle) {
         Err(e) => {
             // 받아 둔 것을 버렸으니 메뉴를 되돌리고, 다음 확인 때 다시 받는다
             eprintln!("업데이트 설치 실패: {e}");
-            update_tray(app);
+            set_update(app, |s| {
+                s.ready = false;
+                s.latest = None;
+                s.error = true;
+            });
         }
     }
 }
@@ -823,6 +935,22 @@ fn shell_open_url(app: AppHandle, url: String) -> Result<(), String> {
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn update_status(app: AppHandle) -> Value {
+    update_snapshot(&app)
+}
+
+#[tauri::command]
+async fn update_check(app: AppHandle) -> Result<Value, String> {
+    check_update(&app).await;
+    Ok(update_snapshot(&app))
+}
+
+#[tauri::command]
+fn update_install(app: AppHandle) {
+    install_update(&app);
+}
+
 /// 잔소리 배너를 눌렀을 때 정리한 폴더를 연다
 #[tauri::command]
 fn nag_open(app: AppHandle) {
@@ -851,6 +979,7 @@ pub fn run() {
         .manage(NagFolder(Mutex::new(None)))
         .manage(Quitting(AtomicBool::new(false)))
         .manage(PendingUpdate::default())
+        .manage(UpdateStatus::default())
         .invoke_handler(tauri::generate_handler![
             config_get,
             config_save,
@@ -869,6 +998,9 @@ pub fn run() {
             shell_show,
             shell_open_url,
             nag_open,
+            update_status,
+            update_check,
+            update_install,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
