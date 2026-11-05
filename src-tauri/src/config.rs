@@ -201,7 +201,13 @@ pub struct Rule {
     pub matcher: Match,
     pub action: String,
     pub dest: String,
+    /// 목적지 안 소분류: "" 안 함 · "auto" 용도·이름·시간 · "month" 연-월
+    #[serde(default)]
+    pub group: String,
 }
+
+/// 소분류 방식
+pub const GROUP_MODES: [&str; 3] = ["", "auto", "month"];
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Target {
@@ -209,6 +215,12 @@ pub struct Target {
     pub path: String,
     pub auto: bool,
     pub rules: Vec<Rule>,
+    /// 하위 폴더 안 파일까지 정리 (기본 꺼짐: 사용자가 만든 폴더는 건드리지 않는다)
+    #[serde(default)]
+    pub recursive: bool,
+    /// 기준 폴더(다른 정리 대상) id. 있으면 이 폴더 규칙 다음에 기준 폴더 규칙을 같이 쓴다.
+    #[serde(default)]
+    pub link: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -220,6 +232,9 @@ pub struct Skip {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Ai {
     pub model: String,
+    /// 이미지·동영상 썸네일을 Claude 에 보내 내용으로 묶기 (기본 꺼짐)
+    #[serde(default)]
+    pub vision: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -251,6 +266,7 @@ fn rule(name: String, extensions: Vec<String>, dest: String, action: &str, older
         matcher: Match { extensions, name_includes: vec![], older_than_days: older },
         action: action.into(),
         dest: if action == "trash" { String::new() } else { dest },
+        group: if action == "trash" { String::new() } else { "auto".into() },
     }
 }
 
@@ -274,20 +290,26 @@ fn category_rules(dest_base: &str) -> Vec<Rule> {
     ]
 }
 
+/// 다운로드는 문서 폴더를 기준 폴더로 연결한다: 다운로드 규칙(오래된 설치 파일) 다음에 문서 규칙을 같이 써서
+/// 다운로드에 들어온 파일도 문서 폴더의 같은 분류 트리로 모인다.
 pub fn default_config() -> Config {
-    let mut downloads = vec![rule(l("오래된 설치 파일", "Old installers"), exts(cat("installer").extensions), String::new(), "trash", 7.0)];
-    downloads.extend(category_rules("~/Documents"));
+    let downloads = vec![rule(l("오래된 설치 파일", "Old installers"), exts(cat("installer").extensions), String::new(), "trash", 7.0)];
+    let target = |id: &str, path: &str, rules: Vec<Rule>, link: &str| Target {
+        id: id.into(),
+        path: path.into(),
+        auto: false,
+        rules,
+        recursive: false,
+        link: link.into(),
+    };
     Config {
-        version: json!(2),
-        targets: vec![
-            Target { id: "downloads".into(), path: "~/Downloads".into(), auto: false, rules: downloads },
-            Target { id: "documents".into(), path: "~/Documents".into(), auto: false, rules: category_rules("") },
-        ],
+        version: json!(3),
+        targets: vec![target("downloads", "~/Downloads", downloads, "documents"), target("documents", "~/Documents", category_rules(""), "")],
         skip: Skip {
             hidden: true,
             patterns: exts(&[".localized", "desktop.ini", "Thumbs.db", "*.crdownload", "*.download", "*.part", "*.tmp", ".정리기록*"]),
         },
-        ai: Ai { model: "sonnet".into() },
+        ai: Ai { model: "sonnet".into(), vision: false },
         settings: Settings { auto_delay_sec: 10.0, notify: true, open_at_login: false, smash: true, open_after: true, language: "system".into() },
     }
 }
@@ -354,6 +376,10 @@ pub fn normalize_rule(r: &Value) -> Rule {
         matcher: normalize_match(r.get("match")),
         action: if trash { "trash".into() } else { "move".into() },
         dest: if trash { String::new() } else { js_string(r.get("dest")) },
+        group: match r.get("group").and_then(Value::as_str) {
+            Some(g) if !trash && GROUP_MODES.contains(&g) => g.into(),
+            _ => String::new(),
+        },
     }
 }
 
@@ -385,10 +411,20 @@ pub fn normalize(cfg: &Value) -> Config {
                     Some(Value::Array(rs)) => rs.iter().map(normalize_rule).collect(),
                     _ => vec![],
                 },
+                recursive: t.get("recursive") == Some(&Value::Bool(true)),
+                link: js_string(t.get("link")),
             })
-            .collect(),
+            .collect::<Vec<Target>>(),
         _ => base.targets.clone(),
     };
+    // 기준 폴더는 한 단계만: 없는 폴더·자기 자신·다른 연결 폴더를 가리키면 끊는다
+    let mut targets = targets;
+    let bases: Vec<(String, bool)> = targets.iter().map(|t| (t.id.clone(), t.link.is_empty())).collect();
+    for t in targets.iter_mut() {
+        if !t.link.is_empty() && !bases.iter().any(|(id, is_base)| *id == t.link && *is_base && *id != t.id) {
+            t.link.clear();
+        }
+    }
 
     Config {
         version: cfg.get("version").cloned().unwrap_or(base.version),
@@ -400,7 +436,10 @@ pub fn normalize(cfg: &Value) -> Config {
                 _ => base.skip.patterns,
             },
         },
-        ai: Ai { model: ai.and_then(|a| a.get("model")).and_then(truthy_str).unwrap_or(base.ai.model) },
+        ai: Ai {
+            model: ai.and_then(|a| a.get("model")).and_then(truthy_str).unwrap_or(base.ai.model),
+            vision: get_bool(ai, "vision", false),
+        },
         settings,
     }
 }
@@ -454,14 +493,16 @@ mod tests {
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         set_lang("en");
         let cfg = default_config();
-        let dests: Vec<_> = cfg.targets[0].rules.iter().map(|r| r.dest.clone()).filter(|d| !d.is_empty()).collect();
-        assert!(dests.contains(&"~/Documents/Images".to_string()));
-        assert!(dests.contains(&"~/Documents/Files".to_string()));
+        let dests: Vec<_> = cfg.targets[1].rules.iter().map(|r| r.dest.clone()).filter(|d| !d.is_empty()).collect();
+        assert!(dests.contains(&"Images".to_string()));
+        assert!(dests.contains(&"Files".to_string()));
         assert_eq!(cfg.targets[0].rules[0].name, "Old installers");
+        assert_eq!(cfg.targets[0].link, "documents", "다운로드는 문서 폴더 규칙을 같이 쓴다");
+        assert!(cfg.targets[1].rules.iter().all(|r| r.group == "auto"));
         assert_eq!(cfg.settings.language, "system");
         assert_eq!(l("한국어", "English"), "English");
         set_lang("ko");
-        assert!(default_config().targets[0].rules.iter().any(|r| r.dest == "~/Documents/사진·이미지"));
+        assert!(default_config().targets[1].rules.iter().any(|r| r.dest == "사진·이미지"));
     }
 
     #[test]
@@ -477,8 +518,22 @@ mod tests {
         assert_eq!(r.matcher.extensions, vec!["pdf"]);
         assert_eq!(r.dest, "");
         assert!(r.id.starts_with("r_"));
+        assert_eq!(r.group, "", "휴지통 규칙은 소분류 없음");
         let text = serde_json::to_string(&cfg.settings).unwrap();
         assert!(text.contains("\"autoDelaySec\":3"), "{text}");
+    }
+
+    #[test]
+    fn links_are_one_level() {
+        let cfg = normalize(&json!({ "targets": [
+            { "id": "a", "path": "~/a", "link": "b" },
+            { "id": "b", "path": "~/b", "link": "c" },
+            { "id": "c", "path": "~/c" },
+            { "id": "d", "path": "~/d", "link": "d" },
+            { "id": "e", "path": "~/e", "link": "없음" }
+        ]}));
+        let links: Vec<_> = cfg.targets.iter().map(|t| t.link.as_str()).collect();
+        assert_eq!(links, vec!["", "c", "", "", ""], "연결된 폴더를 다시 기준으로 쓰거나 자기·없는 폴더를 가리키면 끊는다");
     }
 
     #[test]

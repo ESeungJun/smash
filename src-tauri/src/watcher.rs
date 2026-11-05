@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::config::{load_config, now_ms, Config};
-use crate::organizer::{apply_plan, scan_target, target_root, Applied};
+use crate::organizer::{apply_plan, scan_target_with, target_root, Applied};
 
 const EVENT_DEBOUNCE: Duration = Duration::from_millis(1500);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
@@ -118,7 +118,7 @@ impl Inner {
         if !cfg.targets.iter().any(|t| t.id == id && t.auto) {
             return None;
         }
-        let scan = match scan_target(&cfg, Some(id)) {
+        let scan = match scan_target_with(&cfg, Some(id), false) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[auto] {}: {e}", root.display());
