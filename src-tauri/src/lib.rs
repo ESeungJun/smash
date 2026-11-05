@@ -1,0 +1,933 @@
+//! Smash! 앱 본체: 창, 트레이, 스매시 효과, 잔소리 배너, 화면에서 부르는 명령, 자동 업데이트.
+//! 정리 로직은 organizer·watcher, Claude 연동은 claude, MCP 서버는 mcp 에 있다.
+
+pub mod claude;
+pub mod config;
+pub mod lang;
+pub mod mcp;
+pub mod organizer;
+pub mod trash;
+pub mod watcher;
+
+#[cfg(test)]
+mod test_util;
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
+
+use serde_json::{json, Value};
+use tauri::menu::{CheckMenuItem, MenuBuilder, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::webview::PageLoadEvent;
+use tauri::{AppHandle, Emitter, LogicalPosition, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartExt};
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
+
+use claude::Launch;
+use config::{contract_home, expand_home, load_config, save_config, save_config_value, Config};
+use lang::{get_lang, l, resolve_lang, set_lang};
+use organizer::{apply_plan, find_target, missing_dirs, scan_target, Applied, Item, Op};
+use watcher::AutoTidy;
+
+const APP_NAME: &str = "Smash!";
+/// smash.css 의 타임라인과 맞춘다: 전체 2초, 내리치는 순간 0.8초
+const SMASH_MS: u64 = 2000;
+const SMASH_HIT_MS: u64 = 800;
+const NAG_MS: u64 = 4500;
+const UPDATE_FIRST_CHECK: Duration = Duration::from_secs(15);
+const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+// ── 상태 ──────────────────────────────────────────────
+
+struct Auto(Mutex<Option<AutoTidy>>);
+/// 정리 버튼과 트레이의 정리가 겹치면 앞의 효과를 끊지 않고 차례로 돌린다
+struct SmashQueue(tokio::sync::Mutex<()>);
+/// 잔소리 배너를 누르면 열 폴더
+struct NagFolder(Mutex<Option<String>>);
+struct Quitting(AtomicBool);
+#[derive(Default)]
+struct PendingUpdate(Mutex<Option<(Update, Vec<u8>)>>);
+
+fn cfg_or_default() -> Config {
+    load_config().unwrap_or_else(|_| config::default_config())
+}
+
+fn any_auto(cfg: &Config) -> bool {
+    cfg.targets.iter().any(|t| t.auto)
+}
+
+fn label(p: &str) -> String {
+    if p.is_empty() {
+        String::new()
+    } else {
+        contract_home(p)
+    }
+}
+
+fn platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "windows") {
+        "win32"
+    } else {
+        "linux"
+    }
+}
+
+/// 화면에 보여 줄 짧은 경로와 새로 만들 폴더를 붙인다
+fn decorate(items: &[Item]) -> Value {
+    json!(items
+        .iter()
+        .map(|it| {
+            let mut v = json!(it);
+            v["srcLabel"] = json!(label(&it.src));
+            v["destLabel"] = json!(label(&it.dest));
+            v["duplicateLabel"] = json!(label(it.duplicate_of.as_deref().unwrap_or("")));
+            let dirs: Vec<String> = if it.action == "move" && !it.dest.is_empty() {
+                missing_dirs(Path::new(&it.dest)).iter().map(|d| d.to_string_lossy().into_owned()).collect()
+            } else {
+                vec![]
+            };
+            v["newDirs"] = json!(dirs);
+            v
+        })
+        .collect::<Vec<_>>())
+}
+
+fn to_value<T: serde::Serialize>(v: T) -> Result<Value, String> {
+    serde_json::to_value(v).map_err(|e| e.to_string())
+}
+
+/// 무거운 일(파일 이동·Claude CLI)은 화면을 막지 않게 따로 돌린다
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
+// ── 설정 적용 ─────────────────────────────────────────
+
+fn sync_lang(cfg: &Config) {
+    set_lang(resolve_lang(Some(&cfg.settings.language), None));
+}
+
+fn apply_settings(app: &AppHandle, cfg: &Config) {
+    sync_lang(cfg);
+    if let Some(a) = app.state::<Auto>().0.lock().unwrap().as_ref() {
+        a.sync(Some(cfg.clone()));
+    }
+    // 개발 빌드는 로그인 항목에 넣지 않는다. 값이 바뀔 때만 건드린다
+    if !cfg!(debug_assertions) && !cfg!(target_os = "linux") {
+        let al = app.autolaunch();
+        if al.is_enabled().unwrap_or(false) != cfg.settings.open_at_login {
+            let res = if cfg.settings.open_at_login { al.enable() } else { al.disable() };
+            if let Err(e) = res {
+                eprintln!("로그인 항목을 바꾸지 못했습니다: {e}");
+            }
+        }
+    }
+    update_tray(app);
+}
+
+// ── 창 ────────────────────────────────────────────────
+
+fn set_dock(app: &AppHandle, visible: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let policy = if visible { tauri::ActivationPolicy::Regular } else { tauri::ActivationPolicy::Accessory };
+        let _ = app.set_activation_policy(policy);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, visible);
+}
+
+fn is_app_url(url: &tauri::Url) -> bool {
+    matches!(url.scheme(), "tauri" | "asset") || url.host_str() == Some("tauri.localhost") || url.host_str() == Some("localhost")
+}
+
+fn create_main(app: &AppHandle, show: bool) -> tauri::Result<WebviewWindow> {
+    let win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("renderer/index.html".into()))
+        .title(APP_NAME)
+        .inner_size(1180.0, 800.0)
+        .min_inner_size(860.0, 580.0)
+        .visible(show)
+        // 화면 밖으로 나가는 이동은 막는다. 외부 링크는 openUrl 로 브라우저에서 연다
+        .on_navigation(is_app_url)
+        .build()?;
+    let handle = app.clone();
+    win.on_window_event(move |e| {
+        // 자동 정리가 켜져 있으면 창을 닫아도 트레이에서 계속 지켜본다
+        if let WindowEvent::CloseRequested { api, .. } = e {
+            if !handle.state::<Quitting>().0.load(Ordering::SeqCst) && any_auto(&cfg_or_default()) {
+                api.prevent_close();
+                if let Some(w) = handle.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+                set_dock(&handle, false);
+            }
+        }
+    });
+    Ok(win)
+}
+
+fn show_window(app: &AppHandle, tab: Option<&str>) {
+    set_dock(app, true);
+    let win = match app.get_webview_window("main") {
+        Some(w) => w,
+        None => match create_main(app, true) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("창을 만들지 못했습니다: {e}");
+                return;
+            }
+        },
+    };
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_focus();
+    if let Some(tab) = tab {
+        let _ = win.emit("ui:tab", tab);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn join_all_spaces(w: &WebviewWindow) {
+    let w2 = w.clone();
+    let _ = w.run_on_main_thread(move || {
+        use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+        if let Ok(ptr) = w2.ns_window() {
+            // SAFETY: ns_window 는 이 창의 NSWindow 포인터이고, 메인 스레드에서 부른다
+            let ns: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+            #[allow(unused_unsafe)]
+            unsafe {
+                ns.setCollectionBehavior(
+                    ns.collectionBehavior() | NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::FullScreenAuxiliary,
+                );
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn join_all_spaces(w: &WebviewWindow) {
+    let _ = w.set_visible_on_all_workspaces(true);
+}
+
+fn enc(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// 투명·테두리 없는 맨 위 창 (스매시 효과, 잔소리 배너)
+fn overlay(app: &AppHandle, label: &str, url: String, on_load: impl Fn() + Send + Sync + 'static) -> tauri::WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+    WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+        .transparent(true)
+        .decorations(false)
+        .shadow(false)
+        .resizable(false)
+        .focused(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .visible_on_all_workspaces(true)
+        .visible(false)
+        .on_navigation(is_app_url)
+        .on_page_load(move |_w, p| {
+            if p.event() == PageLoadEvent::Finished {
+                on_load();
+            }
+        })
+}
+
+// ── 등짝 스매시 효과 ──────────────────────────────────
+// 화면 맨 위에 투명 창을 띄워 손바닥이 크게 나타났다가 "찰싹!!" 내리치게 하고, 앱 창도 같이 들썩인다.
+
+/// 효과를 띄우고 손바닥이 내리치는 순간까지 기다린다. 돌려준 receiver 는 효과 창이 닫히면 끝난다.
+/// 효과를 껐거나 창이 안 떠도 정해진 시간 안에 반드시 끝난다.
+async fn smash_effect(app: &AppHandle) -> Option<tokio::sync::oneshot::Receiver<()>> {
+    if !cfg_or_default().settings.smash {
+        return None;
+    }
+    if let Some(old) = app.get_webview_window("smash") {
+        let _ = old.destroy();
+    }
+    let (loaded_tx, loaded_rx) = tokio::sync::oneshot::channel::<()>();
+    let loaded_tx = Mutex::new(Some(loaded_tx));
+    let built = overlay(app, "smash", format!("renderer/smash.html?lang={}", get_lang()), move || {
+        if let Some(tx) = loaded_tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+    })
+    .build();
+    let w = match built {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("스매시 효과 창을 만들지 못했습니다: {e}");
+            return None;
+        }
+    };
+    // 앱 창이 보이면 그 화면, 아니면 주 화면을 덮는다
+    let monitor = app
+        .get_webview_window("main")
+        .filter(|m| m.is_visible().unwrap_or(false))
+        .and_then(|m| m.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    if let Some(m) = monitor {
+        let _ = w.set_position(*m.position());
+        let _ = w.set_size(*m.size());
+    }
+    let _ = w.set_ignore_cursor_events(true);
+
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<()>();
+    let closed_tx = Mutex::new(Some(closed_tx));
+    w.on_window_event(move |e| {
+        if matches!(e, WindowEvent::Destroyed) {
+            if let Some(tx) = closed_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+        }
+    });
+    // 창이 늦게 뜨더라도 정리는 늦어도 1.5초 안에, 창은 늦어도 3초 안에 끝낸다
+    let w2 = w.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(3000)).await;
+        let _ = w2.destroy();
+    });
+    let shown = tokio::time::timeout(Duration::from_millis(1500), loaded_rx).await.is_ok();
+    if shown {
+        let _ = w.show();
+        join_all_spaces(&w);
+        tokio::time::sleep(Duration::from_millis(SMASH_HIT_MS)).await;
+        shake_main(app);
+        let w3 = w.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(SMASH_MS - SMASH_HIT_MS + 100)).await;
+            let _ = w3.destroy();
+        });
+    }
+    Some(closed_rx)
+}
+
+fn shake_main(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("main") else { return };
+    if !win.is_visible().unwrap_or(false) || win.is_fullscreen().unwrap_or(false) || win.is_maximized().unwrap_or(false) {
+        return;
+    }
+    let (Ok(pos), Ok(scale)) = (win.outer_position(), win.scale_factor()) else { return };
+    let start = pos.to_logical::<f64>(scale);
+    tauri::async_runtime::spawn(async move {
+        for (dx, dy) in [(-16.0, 10.0), (14.0, -9.0), (-10.0, -7.0), (8.0, 6.0), (-4.0, 2.0), (0.0, 0.0)] {
+            let _ = win.set_position(LogicalPosition::new(start.x + dx, start.y + dy));
+            tokio::time::sleep(Duration::from_millis(45)).await;
+        }
+    });
+}
+
+/// 파일이 가장 많이 들어간 정리 대상 폴더 안에서, 옮긴 자리들의 공통 상위 폴더를 고른다.
+/// 예: 문서/사진·이미지와 문서/자료로 옮겼으면 문서, 바탕화면/스크린샷에만 옮겼으면 그 폴더.
+fn tidied_folder(cfg: &Config, ops: &[Op]) -> Option<PathBuf> {
+    let dirs: Vec<PathBuf> = ops.iter().filter(|o| o.kind == "move").filter_map(|o| Path::new(o.to.as_deref()?).parent().map(Path::to_path_buf)).collect();
+    if dirs.is_empty() {
+        return None;
+    }
+    let mut roots: Vec<PathBuf> = cfg.targets.iter().map(organizer::target_root).collect();
+    roots.sort_by_key(|r| std::cmp::Reverse(r.as_os_str().len()));
+    let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    for d in dirs {
+        let root = roots.iter().find(|r| d.starts_with(r)).cloned().unwrap_or_else(|| d.clone());
+        match groups.iter_mut().find(|(r, _)| *r == root) {
+            Some((_, list)) => list.push(d),
+            None => groups.push((root, vec![d])),
+        }
+    }
+    // 같은 수면 먼저 나온 쪽 (JS 의 안정 정렬과 같게)
+    let mut best = 0;
+    for (i, (_, list)) in groups.iter().enumerate() {
+        if list.len() > groups[best].1.len() {
+            best = i;
+        }
+    }
+    let (root, list) = &groups[best];
+    let mut common = list[0].clone();
+    for d in list {
+        while common != *root && !d.starts_with(&common) {
+            match common.parent() {
+                Some(p) => common = p.to_path_buf(),
+                None => break,
+            }
+        }
+    }
+    Some(common)
+}
+
+/// 효과를 띄우고, 손바닥이 내리치는 순간 정리한 뒤, 효과 창이 닫힌 다음에 폴더를 연다
+async fn smash_and_apply<F>(app: &AppHandle, plan: F) -> Result<Applied, String>
+where
+    F: FnOnce(&Config) -> Applied + Send + 'static,
+{
+    let queue = app.state::<SmashQueue>();
+    let _turn = queue.0.lock().await;
+    let closed = smash_effect(app).await;
+    let (cfg, res) = blocking(move || {
+        let cfg = load_config()?;
+        let res = plan(&cfg);
+        Ok((cfg, res))
+    })
+    .await?;
+    let dir = if cfg.settings.open_after { res.run.as_ref().and_then(|r| tidied_folder(&cfg, &r.ops)) } else { None };
+    if let Some(rx) = closed {
+        let _ = tokio::time::timeout(Duration::from_millis(3500), rx).await;
+    }
+    if let Some(dir) = dir {
+        let _ = app.opener().open_path(dir.to_string_lossy(), None::<&str>);
+    }
+    Ok(res)
+}
+
+async fn tidy_all_now(app: AppHandle) {
+    let res = smash_and_apply(&app, |cfg| {
+        let mut results = Vec::new();
+        let mut ops = Vec::new();
+        for t in &cfg.targets {
+            match scan_target(cfg, Some(&t.id)) {
+                Ok(scan) => {
+                    let applied = apply_plan(cfg, scan.items, "app");
+                    if let Some(run) = applied.run {
+                        ops.extend(run.ops);
+                    }
+                    results.extend(applied.results);
+                }
+                Err(e) => eprintln!("{}: {e}", t.path),
+            }
+        }
+        let run = if ops.is_empty() { None } else { Some(organizer::Run { ops, ..Default::default() }) };
+        Applied { results, run }
+    })
+    .await;
+    let total = res.map(|r| r.results.iter().filter(|x| x.ok).count()).unwrap_or(0);
+    let _ = app.emit_to("main", "auto:ran", json!({ "count": total }));
+    let title = if total > 0 {
+        l(&format!("찰싹!! {total}개 치웠어요"), &format!("SMACK!! Tidied {total} files"))
+    } else {
+        l("치울 게 없네요. 깨끗해요!", "Nothing to tidy. All clean!")
+    };
+    let _ = app.notification().builder().title(title).show();
+}
+
+// ── 자동 정리 잔소리 배너 ─────────────────────────────
+// 시스템 알림은 권한에 따라 안 뜰 때가 있어서, 화면 위쪽 가운데에 투명 창으로 직접 띄운다.
+// 누르면 정리한 폴더를 연다. 4.5초 뒤 저절로 사라진다.
+
+fn show_nag(app: &AppHandle, sub: String, folder: Option<String>) {
+    if let Some(old) = app.get_webview_window("nag") {
+        let _ = old.destroy();
+    }
+    *app.state::<NagFolder>().0.lock().unwrap() = folder;
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    // 카드(436×70)에 그림자가 잘리지 않을 만큼 여백을 둔 투명 창
+    let (width, height) = (500.0, 130.0);
+    let url = format!("renderer/nag.html?sub={}&lang={}", enc(&sub), get_lang());
+    let handle = app.clone();
+    let mut builder = overlay(app, "nag", url, move || {
+        if let Some(w) = handle.get_webview_window("nag") {
+            let _ = w.show();
+            join_all_spaces(&w);
+        }
+    })
+    .inner_size(width, height);
+    if let Some(m) = monitor {
+        let scale = m.scale_factor();
+        let area = m.work_area();
+        let x = area.position.x as f64 / scale + (area.size.width as f64 / scale - width) / 2.0;
+        let y = area.position.y as f64 / scale;
+        builder = builder.position(x, y);
+    }
+    match builder.build() {
+        Ok(w) => {
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(NAG_MS + 100)).await;
+                let _ = w.destroy();
+            });
+        }
+        Err(e) => eprintln!("잔소리 배너를 띄우지 못했습니다: {e}"),
+    }
+}
+
+fn on_auto_run(app: &AppHandle, target_id: &str, result: &Applied) {
+    let ok: Vec<&organizer::ApplyResult> = result.results.iter().filter(|r| r.ok).collect();
+    let _ = app.emit_to("main", "auto:ran", json!({ "targetId": target_id, "count": ok.len() }));
+    update_tray(app);
+    let cfg = cfg_or_default();
+    if ok.is_empty() || !cfg.settings.notify {
+        return;
+    }
+    let names = ok.iter().take(2).map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ");
+    let more = if ok.len() > 2 { l(&format!(" 외 {}개", ok.len() - 2), &format!(" and {} more", ok.len() - 2)) } else { String::new() };
+    let root = cfg.targets.iter().find(|t| t.id == target_id).map(organizer::target_root).unwrap_or_default();
+    let folder = result.run.as_ref().and_then(|r| tidied_folder(&cfg, &r.ops)).unwrap_or_else(|| root.clone());
+    let where_ = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let n = ok.len();
+    let sub = l(&format!("{where_}에서 {n}개 치웠어요 · {names}{more}"), &format!("Tidied {n} in {where_} · {names}{more}"));
+    let handle = app.clone();
+    let folder = folder.to_string_lossy().into_owned();
+    let _ = app.run_on_main_thread(move || show_nag(&handle, sub, Some(folder)));
+}
+
+// ── 트레이 ────────────────────────────────────────────
+
+fn tray_menu(app: &AppHandle, cfg: &Config) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    let mut b = MenuBuilder::new(app);
+    if let Some((u, _)) = app.state::<PendingUpdate>().0.lock().unwrap().as_ref() {
+        let text = l(&format!("새 버전 v{} 설치하고 다시 시작", u.version), &format!("Install v{} and restart", u.version));
+        b = b.item(&MenuItem::with_id(app, "update", text, true, None::<&str>)?).separator();
+    }
+    b = b.item(&MenuItem::with_id(app, "open", l(&format!("{APP_NAME} 열기"), &format!("Open {APP_NAME}")), true, None::<&str>)?).separator();
+    for t in &cfg.targets {
+        let name = Path::new(&expand_home(&t.path)).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let text = l(&format!("{name} 자동 정리"), &format!("Auto-tidy {name}"));
+        b = b.item(&CheckMenuItem::with_id(app, format!("auto:{}", t.id), text, true, t.auto, None::<&str>)?);
+    }
+    b.item(&MenuItem::with_id(app, "tidy", l("지금 전부 정리하기", "Tidy everything now"), true, None::<&str>)?)
+        .separator()
+        .item(&MenuItem::with_id(app, "quit", l("종료", "Quit"), true, None::<&str>)?)
+        .build()
+}
+
+fn update_tray(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(tray) = handle.tray_by_id("main") else { return };
+        let cfg = cfg_or_default();
+        if let Ok(menu) = tray_menu(&handle, &cfg) {
+            let _ = tray.set_menu(Some(menu));
+        }
+        let pending = handle.state::<PendingUpdate>().0.lock().unwrap().as_ref().map(|(u, _)| u.version.clone());
+        let tip = match pending {
+            Some(v) => format!("{APP_NAME} · {}", l(&format!("새 버전 v{v}"), &format!("v{v} available"))),
+            None if any_auto(&cfg) => format!("{APP_NAME} · {}", l("자동 정리 중", "auto-tidy on")),
+            None => APP_NAME.into(),
+        };
+        let _ = tray.set_tooltip(Some(tip));
+    });
+}
+
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    let icon = if cfg!(target_os = "macos") {
+        tauri::image::Image::from_bytes(include_bytes!("../../assets/trayTemplate@2x.png"))?
+    } else {
+        tauri::image::Image::from_bytes(include_bytes!("../../assets/tray-color.png"))?
+    };
+    let menu = tray_menu(app, &cfg_or_default())?;
+    TrayIconBuilder::with_id("main")
+        .icon(icon)
+        .icon_as_template(cfg!(target_os = "macos"))
+        .tooltip(APP_NAME)
+        .menu(&menu)
+        // macOS 는 왼쪽 클릭에 메뉴, Windows 는 왼쪽 클릭에 창 (Electron 때와 같게)
+        .show_menu_on_left_click(cfg!(target_os = "macos"))
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref().to_string();
+            match id.as_str() {
+                "open" => show_window(app, None),
+                "tidy" => {
+                    tauri::async_runtime::spawn(tidy_all_now(app.clone()));
+                }
+                "update" => install_update(app),
+                "quit" => {
+                    app.state::<Quitting>().0.store(true, Ordering::SeqCst);
+                    app.exit(0);
+                }
+                other => {
+                    if let Some(tid) = other.strip_prefix("auto:") {
+                        let mut cfg = cfg_or_default();
+                        if let Some(t) = cfg.targets.iter_mut().find(|t| t.id == tid) {
+                            t.auto = !t.auto;
+                        }
+                        match save_config(&cfg) {
+                            Ok(saved) => {
+                                apply_settings(app, &saved);
+                                let _ = app.emit_to("main", "config:changed", ());
+                            }
+                            Err(e) => eprintln!("설정을 저장하지 못했습니다: {e}"),
+                        }
+                    }
+                }
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if cfg!(target_os = "macos") {
+                return;
+            }
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                show_window(tray.app_handle(), None);
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
+// ── 자동 업데이트 ─────────────────────────────────────
+
+fn spawn_update_checker(app: AppHandle) {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    thread::spawn(move || {
+        thread::sleep(UPDATE_FIRST_CHECK);
+        loop {
+            if let Err(e) = tauri::async_runtime::block_on(check_update(&app)) {
+                eprintln!("업데이트 확인 실패: {e}");
+            }
+            thread::sleep(UPDATE_INTERVAL);
+        }
+    });
+}
+
+async fn check_update(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    if app.state::<PendingUpdate>().0.lock().unwrap().is_some() {
+        return Ok(()); // 이미 받아 둔 것이 있으면 설치를 기다린다
+    }
+    let Some(update) = app.updater()?.check().await? else { return Ok(()) };
+    let bytes = update.download(|_, _| {}, || {}).await?;
+    *app.state::<PendingUpdate>().0.lock().unwrap() = Some((update, bytes));
+    update_tray(app);
+    Ok(())
+}
+
+fn install_update(app: &AppHandle) {
+    let Some((update, bytes)) = app.state::<PendingUpdate>().0.lock().unwrap().take() else { return };
+    match update.install(bytes) {
+        // Windows 는 설치 프로그램이 앱을 닫고 새 버전을 띄운다. macOS 는 앱 묶음을 바꾼 뒤 다시 시작한다
+        Ok(()) => {
+            app.state::<Quitting>().0.store(true, Ordering::SeqCst);
+            app.restart();
+        }
+        Err(e) => {
+            // 받아 둔 것을 버렸으니 메뉴를 되돌리고, 다음 확인 때 다시 받는다
+            eprintln!("업데이트 설치 실패: {e}");
+            update_tray(app);
+        }
+    }
+}
+
+/// Electron 시절 등록(또는 앱을 옮기기 전 경로)으로 남은 smash MCP 등록을 지금 실행 파일로 바꾼다.
+/// 디스크 이미지에서 바로 띄웠거나(App Translocation) 개발 빌드면 건드리지 않는다.
+fn spawn_registration_fix() {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let launch = Launch::current();
+    if launch.command.is_empty() || launch.command.contains("/AppTranslocation/") || launch.command.starts_with("/Volumes/") {
+        return;
+    }
+    thread::spawn(move || {
+        let changed = claude::refresh_registrations(&launch);
+        if !changed.is_empty() {
+            eprintln!("MCP 등록을 새 실행 파일로 바꿨습니다: {}", changed.join(", "));
+        }
+    });
+}
+
+// ── 화면에서 부르는 명령 ──────────────────────────────
+
+#[tauri::command]
+fn config_get() -> Result<Value, String> {
+    let cfg = load_config()?;
+    Ok(json!({
+        "config": cfg,
+        "configPath": label(&config::config_path().to_string_lossy()),
+        "home": config::home().to_string_lossy(),
+        "sep": std::path::MAIN_SEPARATOR.to_string(),
+        "categories": config::local_categories(),
+        "lang": get_lang(),
+        "platform": platform(),
+    }))
+}
+
+#[tauri::command]
+fn config_save(app: AppHandle, cfg: Value) -> Result<Value, String> {
+    let saved = save_config_value(&cfg)?;
+    apply_settings(&app, &saved);
+    to_value(saved)
+}
+
+#[tauri::command]
+async fn scan(target_id: Option<String>) -> Result<Value, String> {
+    blocking(move || {
+        let res = scan_target(&load_config()?, target_id.as_deref())?;
+        let unmatched: Vec<Value> = res
+            .unmatched
+            .iter()
+            .map(|f| {
+                let mut v = json!(f);
+                v["srcLabel"] = json!(label(&f.path));
+                v
+            })
+            .collect();
+        Ok(json!({
+            "targetId": res.target_id,
+            "root": res.root,
+            "rootLabel": label(&res.root),
+            "items": decorate(&res.items),
+            "unmatched": unmatched,
+        }))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn folders() -> Result<Value, String> {
+    blocking(|| Ok(json!(organizer::folder_tree(&load_config()?, 3).iter().map(|f| label(f)).collect::<Vec<_>>()))).await
+}
+
+#[tauri::command]
+async fn rule_test(target_id: String, rule: Value) -> Result<Value, String> {
+    blocking(move || to_value(organizer::test_rule(&load_config()?, &target_id, &rule)?)).await
+}
+
+fn target_root_of(cfg: &Config, target_id: &str) -> Result<String, String> {
+    find_target(cfg, Some(target_id))
+        .map(|t| organizer::target_root(t).to_string_lossy().into_owned())
+        .ok_or_else(|| l("폴더를 찾을 수 없습니다", "Folder not found"))
+}
+
+#[tauri::command]
+async fn rule_from_text(target_id: String, text: String) -> Result<Value, String> {
+    blocking(move || {
+        let cfg = load_config()?;
+        let root = target_root_of(&cfg, &target_id)?;
+        let text: String = text.chars().take(500).collect();
+        claude::rule_from_text(&cfg, &root, &text)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn apply(app: AppHandle, items: Vec<Item>) -> Result<Value, String> {
+    to_value(smash_and_apply(&app, move |cfg| apply_plan(cfg, items, "app")).await?)
+}
+
+#[tauri::command]
+async fn undo() -> Result<Value, String> {
+    blocking(|| Ok(organizer::undo_last())).await
+}
+
+#[tauri::command]
+async fn history() -> Result<Value, String> {
+    blocking(|| {
+        let runs: Vec<Value> = organizer::load_history()
+            .into_iter()
+            .rev()
+            .map(|r| {
+                let mut v = json!(r);
+                v["ops"] = json!(r
+                    .ops
+                    .iter()
+                    .map(|o| {
+                        let mut ov = json!(o);
+                        ov["fromLabel"] = json!(label(&o.from));
+                        ov["toLabel"] = json!(label(o.to.as_deref().unwrap_or("")));
+                        ov
+                    })
+                    .collect::<Vec<_>>());
+                v
+            })
+            .collect();
+        Ok(json!(runs))
+    })
+    .await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UnmatchedIn {
+    name: String,
+    path: String,
+    #[serde(default)]
+    size: f64,
+    #[serde(default)]
+    mtime_ms: f64,
+}
+
+#[tauri::command]
+async fn ai_suggest(target_id: String, unmatched: Vec<UnmatchedIn>) -> Result<Value, String> {
+    blocking(move || {
+        let cfg = load_config()?;
+        let root = target_root_of(&cfg, &target_id)?;
+        let files: Vec<organizer::FileInfo> =
+            unmatched.into_iter().map(|u| organizer::FileInfo { name: u.name, path: u.path, size: u.size, mtime_ms: u.mtime_ms }).collect();
+        let mut res = claude::suggest_placements(&cfg, &root, &files)?;
+        let items: Vec<Item> = serde_json::from_value(res["items"].take()).map_err(|e| e.to_string())?;
+        res["items"] = decorate(&items);
+        Ok(res)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn integration_status() -> Result<Value, String> {
+    blocking(|| Ok(claude::integration_status(&Launch::current()))).await
+}
+
+#[tauri::command]
+async fn integration_claude_code(location_ids: Option<Vec<String>>) -> Result<Value, String> {
+    blocking(move || Ok(json!(claude::register_claude_code(&Launch::current(), location_ids)))).await
+}
+
+#[tauri::command]
+async fn integration_claude_desktop() -> Result<Value, String> {
+    blocking(|| Ok(json!(claude::register_claude_desktop(&Launch::current())?))).await
+}
+
+#[tauri::command]
+async fn dialog_folder(app: AppHandle, default_path: Option<String>) -> Result<Value, String> {
+    blocking(move || {
+        let mut d = app.dialog().file();
+        if let Some(p) = default_path.filter(|p| !p.is_empty()) {
+            d = d.set_directory(expand_home(&p));
+        }
+        if let Some(w) = app.get_webview_window("main") {
+            d = d.set_parent(&w);
+        }
+        Ok(match d.blocking_pick_folder() {
+            Some(p) => json!(p.into_path().map_err(|e| e.to_string())?.to_string_lossy()),
+            None => Value::Null,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+fn shell_show(app: AppHandle, path: String) -> Result<(), String> {
+    app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn shell_open_url(app: AppHandle, url: String) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Ok(());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+/// 잔소리 배너를 눌렀을 때 정리한 폴더를 연다
+#[tauri::command]
+fn nag_open(app: AppHandle) {
+    let folder = app.state::<NagFolder>().0.lock().unwrap().take();
+    if let Some(f) = folder {
+        let _ = app.opener().open_path(f, None::<&str>);
+    }
+    if let Some(w) = app.get_webview_window("nag") {
+        let _ = w.destroy();
+    }
+}
+
+// ── 시작 ──────────────────────────────────────────────
+
+pub fn run() {
+    let app = tauri::Builder::default()
+        // 이미 떠 있으면 새로 띄우지 않고 그 창을 보여 준다 (가장 먼저 등록해야 한다)
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_window(app, None)))
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(Auto(Mutex::new(None)))
+        .manage(SmashQueue(tokio::sync::Mutex::new(())))
+        .manage(NagFolder(Mutex::new(None)))
+        .manage(Quitting(AtomicBool::new(false)))
+        .manage(PendingUpdate::default())
+        .invoke_handler(tauri::generate_handler![
+            config_get,
+            config_save,
+            scan,
+            folders,
+            rule_test,
+            rule_from_text,
+            apply,
+            undo,
+            history,
+            ai_suggest,
+            integration_status,
+            integration_claude_code,
+            integration_claude_desktop,
+            dialog_folder,
+            shell_show,
+            shell_open_url,
+            nag_open,
+        ])
+        .setup(|app| {
+            let handle = app.handle().clone();
+            // 처음 실행이면 기본 설정(폴더·규칙 이름)도 OS 언어로 만들어진다
+            set_lang(resolve_lang(None, None));
+            let cfg = cfg_or_default();
+            sync_lang(&cfg);
+            let start_hidden = std::env::args().any(|a| a == "--hidden");
+            build_tray(&handle)?;
+            create_main(&handle, !start_hidden)?;
+            if start_hidden {
+                set_dock(&handle, false);
+            }
+            let runner = handle.clone();
+            let auto = AutoTidy::start(Box::new(move |id, res| on_auto_run(&runner, id, res)));
+            *handle.state::<Auto>().0.lock().unwrap() = Some(auto);
+            apply_settings(&handle, &cfg);
+            spawn_update_checker(handle.clone());
+            spawn_registration_fix();
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("Smash! 를 시작하지 못했습니다");
+
+    app.run(|app, event| match event {
+        // 자동 정리를 켜 둔 채 창을 숨겼으면 트레이에서 계속 돈다
+        RunEvent::ExitRequested { api, code: None, .. } => {
+            if !app.state::<Quitting>().0.load(Ordering::SeqCst) && app.get_webview_window("main").is_some() {
+                api.prevent_exit();
+            }
+        }
+        RunEvent::Exit => {
+            if let Some(a) = app.state::<Auto>().0.lock().unwrap().as_ref() {
+                a.stop();
+            }
+        }
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => show_window(app, None),
+        _ => {}
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tidied_folder_picks_common_parent() {
+        let mut cfg = config::default_config();
+        cfg.targets.truncate(1);
+        cfg.targets[0].path = "/t/docs".into();
+        let op = |to: &str| Op { kind: "move".into(), from: "/x".into(), to: Some(to.into()) };
+        let ops = vec![op("/t/docs/사진/a.png"), op("/t/docs/자료/b.pdf")];
+        assert_eq!(tidied_folder(&cfg, &ops), Some(PathBuf::from("/t/docs")));
+        let ops = vec![op("/t/docs/shots/a.png"), op("/t/docs/shots/b.png")];
+        assert_eq!(tidied_folder(&cfg, &ops), Some(PathBuf::from("/t/docs/shots")));
+        assert_eq!(tidied_folder(&cfg, &[]), None);
+    }
+
+    #[test]
+    fn query_encoding() {
+        assert_eq!(enc("a b&c=다"), "a%20b%26c%3D%EB%8B%A4");
+    }
+}

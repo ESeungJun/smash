@@ -30,6 +30,7 @@ dirs = "6"
 filetime = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 sys-locale = "0.3"
+tokio = { version = "1", features = ["time", "sync"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = "0.3"
