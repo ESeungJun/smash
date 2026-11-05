@@ -227,7 +227,7 @@ fn enc(s: &str) -> String {
 }
 
 /// 투명·테두리 없는 맨 위 창 (스매시 효과, 잔소리 배너)
-fn overlay(app: &AppHandle, label: &str, url: String, on_load: impl Fn() + Send + Sync + 'static) -> tauri::WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+fn overlay<'a>(app: &'a AppHandle, label: &str, url: String, on_load: impl Fn() + Send + Sync + 'static) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
     WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
         .transparent(true)
         .decorations(false)
