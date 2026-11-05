@@ -24,6 +24,7 @@ const state = {
   draft: null, // 편집 중인 규칙
   folders: [],
   integration: null,
+  update: null,
 };
 
 // ---------- 공통 ----------
@@ -769,6 +770,50 @@ async function refreshIntegration() {
 const switchHtml = (attr, on) => `<label class="switch"><input type="checkbox" ${attr} ${on ? 'checked' : ''} /><span></span></label>`;
 const dotLine = (on, onText, offText) => `<div class="status-line"><span class="dot ${on ? 'on' : 'off'}"></span>${on ? onText : offText}</div>`;
 
+// 설정 탭 맨 아래 앱 정보 카드. 업데이트 상태가 바뀌면 이 카드만 다시 그린다.
+function updateCardHtml() {
+  const u = state.update;
+  if (!u) return '';
+  let status;
+  let button = '';
+  if (u.ready) {
+    status = dotLine(true, L(`새 버전(v${esc(u.latest)})을 받아 뒀어요`, `v${esc(u.latest)} is downloaded and ready`), '');
+    button = `<button class="primary small" id="update-install">${L('설치하고 다시 시작', 'Install and restart')}</button>`;
+  } else if (u.checking) {
+    status = `<div class="status-line muted"><span class="spinner"></span>${
+      u.latest ? L(`새 버전 v${esc(u.latest)} 받는 중…`, `Downloading v${esc(u.latest)}…`) : L('업데이트 확인 중…', 'Checking for updates…')
+    }</div>`;
+  } else if (u.error) {
+    status = dotLine(false, '', L('업데이트를 확인하지 못했어요. 인터넷 연결을 확인해 주세요.', "Couldn't check for updates. Check your internet connection."));
+    button = `<button class="ghost small" id="update-check">${L('다시 확인', 'Try again')}</button>`;
+  } else {
+    status = u.checked ? dotLine(true, L('최신 버전이에요', "You're up to date"), '') : '';
+    button = `<button class="ghost small" id="update-check">${L('업데이트 확인', 'Check for updates')}</button>`;
+  }
+  return `<div class="card" id="update-card">
+    <h3>Smash! <span class="muted">v${esc(u.current)}</span></h3>
+    <p>${L('새 버전은 저절로 받아 둬요. 설치하면 앱이 잠깐 꺼졌다가 다시 켜져요.', 'New versions download on their own. Installing restarts the app.')}</p>
+    ${status}
+    <div class="card-actions">${button}<button class="ghost small" data-url="https://github.com/ESeungJun/smash/releases">${L('릴리스 노트', 'Release notes')}</button></div>
+  </div>`;
+}
+
+function renderUpdate() {
+  const card = $('#update-card');
+  if (card) card.outerHTML = updateCardHtml();
+}
+
+async function checkUpdate() {
+  state.update = { ...state.update, checking: true, error: false };
+  renderUpdate();
+  try {
+    state.update = await tidy.checkUpdate();
+  } catch {
+    state.update = { ...state.update, checking: false, error: true };
+  }
+  renderUpdate();
+}
+
 function renderSettings() {
   const cfg = state.config;
   const st = cfg.settings;
@@ -820,7 +865,7 @@ function renderSettings() {
 
   const s = state.integration;
   if (!s) {
-    $('#settings').innerHTML = `${autoCard}<div class="card"><span class="spinner"></span>${L('Claude 연결 확인 중…', 'Checking Claude…')}</div>`;
+    $('#settings').innerHTML = `${autoCard}<div class="card"><span class="spinner"></span>${L('Claude 연결 확인 중…', 'Checking Claude…')}</div>${updateCardHtml()}`;
     return;
   }
   const cli = s.cli;
@@ -871,6 +916,7 @@ function renderSettings() {
       ${dotLine(s.claudeDesktop, L('등록됨', 'Added'), s.desktopInstalled ? L('등록 안 됨', 'Not added') : L('Claude Desktop이 설치돼 있지 않아요', 'Claude Desktop is not installed'))}
       <div class="card-actions"><button class="primary small" id="reg-desktop" ${s.desktopInstalled ? '' : 'disabled'}>${s.claudeDesktop ? L('다시 등록', 'Add again') : L('등록하기', 'Add')}</button></div>
     </div>
+    ${updateCardHtml()}
     <p class="hint">${L('설정 파일', 'Settings file')}: ${esc(state.configPath)}</p>`;
 }
 
@@ -987,6 +1033,10 @@ document.addEventListener('click', async (e) => {
     case 'undo': return doUndo();
     case 'reg-code': return register('code');
     case 'reg-desktop': return register('desktop');
+    case 'update-check': return checkUpdate();
+    case 'update-install':
+      el.disabled = true;
+      return tidy.installUpdate();
     default:
   }
 });
@@ -1090,6 +1140,10 @@ tidy.onAutoRan(async ({ count }) => {
   if ($('#tab-history').classList.contains('active')) renderHistory();
 });
 tidy.onTab((tab) => switchTab(tab));
+tidy.onUpdate((u) => {
+  state.update = u;
+  renderUpdate();
+});
 tidy.onConfigChanged(async () => {
   const { config } = await tidy.getConfig();
   state.config = config;
@@ -1125,6 +1179,10 @@ function translateStatic() {
   Object.assign(state, { config, configPath, home, sep, categories, platform });
   LANG = lang;
   translateStatic();
+  tidy.updateStatus().then((u) => {
+    state.update = u;
+    if ($('#tab-settings').classList.contains('active')) renderSettings();
+  });
   loadFolders();
   refreshIntegration().then(() => {
     if (state.scan) renderPreview();
