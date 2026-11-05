@@ -238,6 +238,8 @@ fn overlay<'a>(app: &'a AppHandle, label: &str, url: String, on_load: impl Fn() 
         .always_on_top(true)
         .visible_on_all_workspaces(true)
         .visible(false)
+        // 포커스를 안 가져가는 창이라, 첫 클릭이 창 활성화에 먹히지 않게 한다 (잔소리 배너 클릭)
+        .accept_first_mouse(true)
         .on_navigation(is_app_url)
         .on_page_load(move |_w, p| {
             if p.event() == PageLoadEvent::Finished {
@@ -891,13 +893,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Smash! 를 시작하지 못했습니다");
 
+    // 자동 정리를 켜 둔 채 창을 닫으면 창을 숨기기만 하므로(create_main) 앱은 트레이에서 계속 돈다.
+    // 자동 정리가 꺼져 있으면 창을 닫을 때 앱도 끝난다 (1.x 와 같게)
     app.run(|app, event| match event {
-        // 자동 정리를 켜 둔 채 창을 숨겼으면 트레이에서 계속 돈다
-        RunEvent::ExitRequested { api, code: None, .. } => {
-            if !app.state::<Quitting>().0.load(Ordering::SeqCst) && app.get_webview_window("main").is_some() {
-                api.prevent_exit();
-            }
-        }
         RunEvent::Exit => {
             if let Some(a) = app.state::<Auto>().0.lock().unwrap().as_ref() {
                 a.stop();

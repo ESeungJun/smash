@@ -60,7 +60,9 @@ jobs:
       - run: npm ci
       - name: 설치 파일 (macOS, 임시 서명)
         if: runner.os == 'macOS'
-        run: npx tauri build --target universal-apple-darwin --bundles app,dmg
+        run: |
+          npx tauri build --target universal-apple-darwin --bundles app
+          scripts/make-dmg.sh src-tauri/target/universal-apple-darwin/release/bundle/macos/Smash.app src-tauri/target/universal-apple-darwin/release/bundle/dmg/Smash-macOS.dmg
       - name: 설치 파일 (Windows)
         if: runner.os == 'Windows'
         run: npx tauri build --bundles nsis

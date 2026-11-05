@@ -6,10 +6,9 @@
 정리하기를 누르면 화면에 커다란 손바닥이 내려와 "찰싹!!" 하고, 파일은 제자리로 들어가 있다.</p>
 
 <p align="center">
-  <a href="https://github.com/ESeungJun/smash/releases/latest/download/Smash-macOS-arm64.dmg"><b>⬇ 맥 (애플 칩) 내려받기</b></a> ·
-  <a href="https://github.com/ESeungJun/smash/releases/latest/download/Smash-macOS-x64.dmg"><b>⬇ 맥 (인텔) 내려받기</b></a><br>
+  <a href="https://github.com/ESeungJun/smash/releases/latest/download/Smash-macOS.dmg"><b>⬇ 맥 내려받기</b></a> ·
   <a href="https://github.com/ESeungJun/smash/releases/latest/download/Smash-Windows-x64-Setup.exe"><b>⬇ 윈도우 (x64) 내려받기</b></a><br>
-  <sub>macOS 12 이상 · Windows 10 이상 · 아직 코드 서명 전 · <a href="https://github.com/ESeungJun/smash/releases">모든 릴리스</a></sub>
+  <sub>macOS 11 이상 (애플 칩·인텔) · Windows 10 이상 · 맥 앱은 Apple 서명·공증 · <a href="https://github.com/ESeungJun/smash/releases">모든 릴리스</a></sub>
 </p>
 
 <p align="center"><a href="README.md">English</a> · <b>한국어</b></p>
@@ -70,18 +69,13 @@ Claude 기능은 [Claude Code CLI](https://docs.claude.com/en/docs/claude-code)�
 
 ### 맥
 
-| 맥 | 파일 |
-|---|---|
-| 애플 칩(M1 이후) | [`Smash-macOS-arm64.dmg`](https://github.com/ESeungJun/smash/releases/latest/download/Smash-macOS-arm64.dmg) |
-| 인텔 칩 | [`Smash-macOS-x64.dmg`](https://github.com/ESeungJun/smash/releases/latest/download/Smash-macOS-x64.dmg) |
+[`Smash-macOS.dmg`](https://github.com/ESeungJun/smash/releases/latest/download/Smash-macOS.dmg)를 내려받는다.
+파일 하나로 애플 칩과 인텔 맥 모두에서 돈다.
+dmg를 열고 `Smash.app`을 응용 프로그램 폴더로 끌어 넣는다. Apple 서명·공증을 받아서 경고 없이 열린다.
 
-dmg를 열고 `Smash.app`을 응용 프로그램 폴더로 끌어 넣는다.
-아직 Apple 공증 전이라 처음 열 때 막힌다.
-**시스템 설정 → 개인정보 보호 및 보안**에서 Smash 옆의 **그래도 열기**를 누르거나, 터미널에서 아래를 실행한다.
+새 버전은 알아서 받아 둔다. 다 받으면 트레이 메뉴에 **새 버전 vX.Y.Z 설치하고 다시 시작**이 생긴다.
 
-```bash
-xattr -dr com.apple.quarantine /Applications/Smash.app
-```
+1.x에서 Claude와 연결해 뒀다면, 2.0을 처음 켤 때 그 연결을 새 앱으로 알아서 바꿔 준다.
 
 ### 윈도우
 
@@ -93,9 +87,11 @@ Windows 10 이상. 실제 윈도우 기기에서는 아직 테스트하지 않�
 
 ## 만든 재료
 
-- **Electron**, 프레임워크 없는 순수 CommonJS. 스매시 효과와 배너는 포커스를 가져가지 않는 투명 `BrowserWindow`다.
-- **Node 내장 테스트 러너**로 규칙 엔진, MCP 서버, 자동 정리 감시를 테스트한다.
-- **stdio MCP**: 앱의 Electron 실행 파일을 `ELECTRON_RUN_AS_NODE=1`로 돌려서 Node를 따로 깔 필요가 없다.
+- **Tauri 2 + Rust**: 앱 본체, 규칙 엔진, 폴더 감시. 화면은 프레임워크 없는 HTML·CSS·JavaScript다.
+  스매시 효과와 배너는 포커스를 가져가지 않는 투명 창이다.
+- **stdio MCP**: Claude가 앱 실행 파일을 `smash --mcp`로 띄워서 따로 깔 게 없다.
+- **cargo test**로 규칙 엔진, MCP 서버, 자동 정리 감시를 테스트한다.
+- Electron(1.x)에서 Tauri(2.0)로 옮기면서 맥 설치 파일이 120MB 안팎에서 몇 MB로 줄었다.
 
 Claude Code와 함께 만들었다.
 
@@ -103,16 +99,18 @@ Claude Code와 함께 만들었다.
 
 ```bash
 npm install
-npm start          # 앱 실행
-npm test           # 규칙 엔진·MCP·자동 정리 테스트
+npm run dev        # 앱 실행 (Rust 필요)
+npm test           # cargo test (아래처럼 --test-threads=1 로)
+npm run build      # 이 컴퓨터용 설치 파일
 npm run icons      # assets/*.svg → build/icon.png, 트레이 아이콘
-npm run dist:mac   # dist/Smash-macOS-*.dmg
-npm run dist:win   # dist/Smash-Windows-x64-Setup.exe (macOS에서도 빌드됨)
 ```
 
-- 설정: 맥 `~/Library/Application Support/Smash/config.json`, 윈도우 `%APPDATA%\Smash\config.json`. `SMASH_HOME`으로 위치를 바꿀 수 있다(테스트용).
-- 빌드용 productName은 영문 `Smash`로 둔다. 실행 파일과 Helper 앱 이름이 이걸 따라가는데, 둘이 어긋나면 "Unable to find helper app"으로 앱이 바로 죽는다.
-  화면 이름 "Smash!"는 `build/lproj`와 `app.setName`이 맡는다.
+규칙 엔진은 `src-tauri/src`(`organizer.rs`, `watcher.rs`, `claude.rs`, `mcp.rs`), 화면은 `src/renderer`에 있다.
+`src/renderer/tauri-bridge.js`가 Rust 명령을 화면에 `window.tidy`로 넘긴다.
+`feature/*` 브랜치를 push하면 GitHub Actions가 테스트를 돌리고 서명 없는 설치 파일을 만든다. `vX.Y.Z` 태그는 서명한 릴리스를 만든다.
+
+- 설정: 맥 `~/Library/Application Support/Smash/config.json`, 윈도우 `%APPDATA%\Smash\config.json`. `SMASH_HOME`으로 위치를 바꿀 수 있다(테스트용). 테스트끼리 이 설정을 같이 쓰므로 하나씩 돌린다(`-- --test-threads=1`).
+- productName은 영문 `Smash`로 둔다. Finder·메뉴 막대에 보이는 "Smash!"는 `build/lproj`가 맡는다.
 
 ### 브랜치 (git flow)
 

@@ -6,10 +6,9 @@
 Press tidy and a giant palm comes down on your screen. "찰싹!!" Everything is in its folder.</p>
 
 <p align="center">
-  <a href="https://github.com/ESeungJun/smash/releases/latest/download/Smash-macOS-arm64.dmg"><b>⬇ Download for Mac (Apple silicon)</b></a> ·
-  <a href="https://github.com/ESeungJun/smash/releases/latest/download/Smash-macOS-x64.dmg"><b>⬇ Download for Mac (Intel)</b></a><br>
+  <a href="https://github.com/ESeungJun/smash/releases/latest/download/Smash-macOS.dmg"><b>⬇ Download for Mac</b></a> ·
   <a href="https://github.com/ESeungJun/smash/releases/latest/download/Smash-Windows-x64-Setup.exe"><b>⬇ Download for Windows (x64)</b></a><br>
-  <sub>macOS 12+ · Windows 10+ · not code-signed yet · <a href="https://github.com/ESeungJun/smash/releases">All releases</a></sub>
+  <sub>macOS 11+ (Apple silicon and Intel) · Windows 10+ · Mac app signed and notarized · <a href="https://github.com/ESeungJun/smash/releases">All releases</a></sub>
 </p>
 
 <p align="center"><b>English</b> · <a href="README.ko.md">한국어</a></p>
@@ -73,18 +72,13 @@ Claude features need the [Claude Code CLI](https://docs.claude.com/en/docs/claud
 
 ### Mac
 
-| Mac | File |
-|---|---|
-| Apple silicon (M1 and later) | [`Smash-macOS-arm64.dmg`](https://github.com/ESeungJun/smash/releases/latest/download/Smash-macOS-arm64.dmg) |
-| Intel | [`Smash-macOS-x64.dmg`](https://github.com/ESeungJun/smash/releases/latest/download/Smash-macOS-x64.dmg) |
+Download [`Smash-macOS.dmg`](https://github.com/ESeungJun/smash/releases/latest/download/Smash-macOS.dmg).
+One file runs on both Apple silicon and Intel Macs.
+Open it and drag `Smash.app` into Applications. The app is signed and notarized by Apple, so it opens without a warning.
 
-Open the dmg and drag `Smash.app` into Applications.
-The app isn't notarized yet, so macOS blocks it the first time:
-open **System Settings → Privacy & Security** and click **Open Anyway** next to Smash, or run
+Smash updates itself. When a new version is downloaded, the tray menu shows **Install vX.Y.Z and restart**.
 
-```bash
-xattr -dr com.apple.quarantine /Applications/Smash.app
-```
+If you used Smash 1.x and connected it to Claude, the first launch of 2.0 points that connection at the new app for you.
 
 ### Windows
 
@@ -96,9 +90,11 @@ The app speaks English and Korean. It follows your system language; change it un
 
 ## Built with
 
-- **Electron** with plain CommonJS, no framework. The smash and the banner are transparent, non-focusable `BrowserWindow`s.
-- **Node's built-in test runner** for the rules engine, MCP server and auto-tidy watcher.
-- **MCP over stdio** — the server runs on the app's own Electron binary with `ELECTRON_RUN_AS_NODE=1`, so no separate Node install is needed.
+- **Tauri 2 + Rust** for the app, the rules engine and the folder watcher. The screens are plain HTML, CSS and JavaScript with no framework.
+  The smash and the banner are transparent, non-focusable windows.
+- **MCP over stdio**: Claude starts the app's own binary as `smash --mcp`, so nothing else needs to be installed.
+- **cargo test** for the rules engine, MCP server and auto-tidy watcher.
+- Moving from Electron (1.x) to Tauri (2.0) took the Mac download from about 120MB to a few MB.
 
 Built together with Claude Code.
 
@@ -106,17 +102,19 @@ Built together with Claude Code.
 
 ```bash
 npm install
-npm start          # run the app
-npm test           # rules engine, MCP and auto-tidy tests
+npm run dev        # run the app (needs Rust)
+npm test           # cargo test (run with --test-threads=1, see below)
+npm run build      # installer for this machine
 npm run icons      # assets/*.svg → build/icon.png and tray icons
-npm run dist:mac   # dist/Smash-macOS-*.dmg
-npm run dist:win   # dist/Smash-Windows-x64-Setup.exe (builds on macOS too)
 ```
 
+The rules engine lives in `src-tauri/src` (`organizer.rs`, `watcher.rs`, `claude.rs`, `mcp.rs`) and the screens in `src/renderer`.
+`src/renderer/tauri-bridge.js` exposes the Rust commands to the screens as `window.tidy`.
+Pushing a `feature/*` branch runs the tests and builds unsigned installers on GitHub Actions. Tags `vX.Y.Z` build the signed release.
+
 - Settings live in `~/Library/Application Support/Smash/config.json` on Mac and `%APPDATA%\Smash\config.json` on Windows.
-  Set `SMASH_HOME` to use another folder (handy for tests).
-- Keep the build `productName` as plain ASCII `Smash`. The executable and its Helper apps are named after it,
-  and if they don't match the app dies at launch with "Unable to find helper app". The display name "Smash!" comes from `build/lproj` and `app.setName`.
+  Set `SMASH_HOME` to use another folder (handy for tests). Tests share that setting, so run them one at a time (`-- --test-threads=1`).
+- `productName` stays plain ASCII `Smash`. The name "Smash!" shown in Finder and the menu bar comes from `build/lproj`.
 
 Branches follow git flow: `main` holds releases (tagged `vX.Y.Z`), `develop` collects the next one,
 and work happens on `feature/*`, `release/*` and `hotfix/*` branches.

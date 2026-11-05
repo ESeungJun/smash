@@ -485,7 +485,8 @@ fn set_server(data: &mut Value, launch: &Launch, drop_legacy: bool) {
     let map: &mut Map<String, Value> = servers.as_object_mut().unwrap();
     if drop_legacy {
         for name in LEGACY_MCP_NAMES {
-            map.remove(name);
+            // 다른 항목 순서를 바꾸지 않게 지운다 (remove 는 맨 끝 항목을 그 자리로 옮긴다)
+            map.shift_remove(name);
         }
     }
     let mut entry = launch.to_json();

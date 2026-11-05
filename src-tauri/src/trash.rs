@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::lang::l;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn failed() -> String {
     l("휴지통으로 옮기지 못했습니다", "Could not move to Trash")
 }

@@ -91,10 +91,11 @@ jobs:
           # 설정 파일의 임시 서명("-") 대신 가져온 Developer ID 로 서명하고, 위 API 키로 공증한다
           export APPLE_SIGNING_IDENTITY=$(security find-identity -v -p codesigning "$keychain" | grep -o '"Developer ID Application[^"]*"' | head -1 | tr -d '"')
           if [ -z "$APPLE_SIGNING_IDENTITY" ]; then echo "::error::Developer ID 인증서를 찾지 못했습니다"; exit 1; fi
-          npx tauri build --target universal-apple-darwin --bundles app,dmg --config "$UPDATER"
+          # dmg 는 Tauri 의 bundle_dmg.sh 가 러너에서 자주 실패해서 직접 만든다 (앱은 이미 서명·공증됨)
+          npx tauri build --target universal-apple-darwin --bundles app --config "$UPDATER"
           mkdir -p out
           b=src-tauri/target/universal-apple-darwin/release/bundle
-          cp $b/dmg/*.dmg out/Smash-macOS.dmg
+          scripts/make-dmg.sh $b/macos/Smash.app out/Smash-macOS.dmg
           cp out/Smash-macOS.dmg out/Smash-macOS-arm64.dmg
           cp out/Smash-macOS.dmg out/Smash-macOS-x64.dmg
           cp $b/macos/*.app.tar.gz out/Smash-macOS.app.tar.gz
