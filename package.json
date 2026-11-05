@@ -1,7 +1,7 @@
 {
   "name": "smash",
   "productName": "Smash!",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "엄마 등짝 스매싱처럼 다운로드·문서 폴더를 규칙대로 정리하는 앱. API 키 없이 로그인된 Claude(MCP·CLI)와 연동",
   "homepage": "https://github.com/ESeungJun/smash",
   "repository": {
