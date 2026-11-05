@@ -17,6 +17,7 @@ const EVENT_DEBOUNCE: Duration = Duration::from_millis(1500);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const RETRY_WATCH: Duration = Duration::from_secs(30);
 
+/// 자동 정리를 한 폴더의 id 와 결과
 pub type OnRun = Box<dyn Fn(&str, &Applied) + Send>;
 
 enum Msg {
@@ -159,7 +160,7 @@ impl Inner {
         for s in srcs {
             self.sizes.remove(&s);
         }
-        (self.on_run)(&root.to_string_lossy(), &result);
+        (self.on_run)(id, &result);
         Some(result)
     }
 
@@ -289,7 +290,10 @@ mod tests {
 
         let runs = Arc::new(Mutex::new(0));
         let r2 = runs.clone();
-        let mut inner = test_inner(Box::new(move |_, _| *r2.lock().unwrap() += 1));
+        let mut inner = test_inner(Box::new(move |id, _| {
+            assert_eq!(id, "inbox");
+            *r2.lock().unwrap() += 1;
+        }));
         assert_eq!(inner.sync(None), vec!["inbox"]);
         // 첫 확인: 크기를 기록만 하고 기다린다.
         assert!(inner.check("inbox").is_none());
