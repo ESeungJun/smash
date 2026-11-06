@@ -12,6 +12,7 @@
 </p>
 
 <p align="center"><a href="README.md">English</a> · <b>한국어</b></p>
+<p align="center">📝 만든 이야기: <a href="https://velog.io/@haul/smash-downloads-folder-slap">velog</a> · <a href="https://velog.io/@haul/electron-to-tauri-198mb-to-5mb">Tauri 전환기</a></p>
 
 <p align="center"><a href="docs/video/smash.mp4"><img src="docs/images/smash.gif" width="100%" alt="Smash!: 정리하기를 누르면 화면에 커다란 손바닥이 '찰싹!!' 내려오고, 다운로드 목록이 비어 있다"></a><br>
 <sub>▶ <a href="docs/video/smash.mp4">고화질 영상 보기 (MP4, 4초)</a></sub></p>
