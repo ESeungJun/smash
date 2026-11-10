@@ -12,6 +12,7 @@ Press tidy and a giant palm comes down on your screen. "찰싹!!" Everything is 
 </p>
 
 <p align="center"><b>English</b> · <a href="README.ko.md">한국어</a></p>
+<p align="center">📝 Story behind it: <a href="https://medium.com/@haul/63e88a008b66">Medium</a> · <a href="https://velog.io/@haul/smash-downloads-folder-slap">velog (Korean)</a> · <a href="https://velog.io/@haul/electron-to-tauri-198mb-to-5mb">Tauri move (Korean)</a></p>
 
 <p align="center"><a href="docs/video/smash.mp4"><img src="docs/images/smash.gif" width="100%" alt="Smash!: pressing tidy brings a giant palm down on the screen with a '찰싹!!', and the Downloads list is empty afterwards"></a><br>
 <sub>▶ <a href="docs/video/smash.mp4">Watch the full-quality video (MP4, 4s)</a></sub></p>
