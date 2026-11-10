@@ -1,5 +1,5 @@
 'use strict';
-/* global tidy */
+/* global tidy, SmashLogic, SmashSound */
 
 const $ = (sel) => document.querySelector(sel);
 // 화면 언어. main이 설정(system이면 OS 언어)을 보고 정해서 config:get으로 넘겨준다.
@@ -27,7 +27,15 @@ const state = {
   folders: [],
   integration: null,
   update: null,
+  rev: '', // 마지막으로 읽거나 저장한 설정 파일의 상태
+  base: null, // 그때의 설정(다른 프로그램이 바꾼 것과 합칠 때 기준)
+  canRestoreTrash: true,
+  lastResult: null, // 방금 정리에서 옮기지 못한 파일 { failed, historyError }
+  autoConfirm: null, // 자동 정리를 켜기 전 확인 중인 폴더 { id, scan, autoTrash }
+  autoCollapse: false,
 };
+
+const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
 // ---------- 공통 ----------
 
@@ -69,8 +77,22 @@ const ICONS = {
 const ico = (name) =>
   `<svg class="ico" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
+function adoptConfig(config, rev) {
+  state.config = config;
+  state.rev = rev;
+  state.base = JSON.parse(JSON.stringify(config));
+}
+
+// 저장 직전에 디스크를 다시 본다. 그 사이 다른 프로그램(Claude 의 MCP 서버)이 규칙을 넣었으면 합쳐서 저장한다.
 async function saveConfig() {
-  state.config = await tidy.saveConfig(state.config);
+  try {
+    const disk = await tidy.getConfig();
+    if (disk.rev !== state.rev) state.config = SmashLogic.mergeConfig(state.base, state.config, disk.config);
+  } catch {
+    // 못 읽으면 화면 것을 그대로 저장한다
+  }
+  const saved = await tidy.saveConfig(state.config);
+  adoptConfig(saved.config, saved.rev);
   renderTargets();
 }
 
@@ -120,7 +142,7 @@ async function addTarget() {
   const exists = state.config.targets.find((t) => t.path === label);
   if (exists) return selectTarget(exists.id);
   const id = `t_${Date.now().toString(36)}`;
-  state.config.targets.push({ id, path: label, auto: false, rules: [] });
+  state.config.targets.push({ id, path: label, auto: false, rules: [], autoTrash: true });
   await saveConfig();
   await selectTarget(id);
   toast(L('폴더를 추가했어요. 규칙 탭에서 정리 규칙을 만들어 보세요.', 'Folder added. Make some rules in the Rules tab.'));
@@ -190,6 +212,7 @@ async function doScan() {
   state.unchecked = new Set();
   $('#plan').innerHTML = `<div class="block"><div class="empty"><span class="spinner"></span>${L('살펴보는 중…', 'Looking…')}</div></div>`;
   $('#unmatched').innerHTML = '';
+  $('#blocked').innerHTML = '';
   try {
     state.scan = await tidy.scan(state.targetId);
   } catch (err) {
@@ -199,6 +222,9 @@ async function doScan() {
     updateApplyButton();
     return;
   }
+  // 파일이 아주 많으면 하위 폴더는 접어서 그린다(펼칠 때 그 안의 행을 만든다)
+  state.autoCollapse = state.scan.items.length > 400;
+  if (!state.autoCollapse) state.collapsed = new Set([...state.collapsed].filter((k) => !k.startsWith('auto:')));
   renderPreview();
 }
 
@@ -254,24 +280,38 @@ function fileRow(it, depth) {
     it.note === 'renamed'
       ? `<span class="tag warn" title="${L(`같은 이름이 있어 ${esc(baseName(it.dest))}(으)로 저장`, `Saved as ${esc(baseName(it.dest))} because the name is taken`)}">${L('이름 변경', 'Renamed')}</span>`
       : '',
-  ].join('');
+  ].filter(Boolean);
   const where =
     it.note === 'duplicate'
       ? L(`같은 파일이 ${esc(destText(dirOf(it.duplicateOf)))}에 있어요`, `Same file already in ${esc(destText(dirOf(it.duplicateOf)))}`)
       : `${sameDir ? '' : L(`${esc(fromDir)}에서 · `, `from ${esc(fromDir)} · `)}${esc(String(it.reason || '').replace(/^규칙: /, ''))}`;
-  return `<li class="trow file ${off ? 'off' : ''}" data-depth="${Math.min(depth, 8)}">
+  // 여러 규칙에 맞으면 위에 있는 규칙이 잡는다. 밀린 규칙을 알려 준다.
+  const also = it.alsoMatched || [];
+  const why = also.length
+    ? L(
+        `규칙 '${it.reason}'이(가) 먼저 잡았어요. ${also.map((n) => `'${n}'`).join(', ')}도 맞지만 순서가 뒤예요. 규칙 탭에서 순서를 바꿀 수 있어요.`,
+        `Rule '${it.reason}' caught it first. ${also.map((n) => `'${n}'`).join(', ')} also match but come later. Reorder them in the Rules tab.`,
+      )
+    : '';
+  if (also.length) tags.push(`<span class="tag" title="${esc(why)}">${L(`규칙 ${also.length + 1}개에 맞음`, `${also.length + 1} rules match`)}</span>`);
+  return `<li class="trow file ${off ? 'off' : ''}" data-depth="${Math.min(depth, 8)}" data-row="${esc(it.id)}">
     <span class="caret-space"></span>
     <input type="checkbox" data-item="${esc(it.id)}" ${off ? '' : 'checked'} aria-label="${L(`${esc(it.name)} 포함`, `Include ${esc(it.name)}`)}" />
     <span class="ficon">${ico('file')}</span>
     <span class="tname" title="${esc(it.srcLabel)}">${esc(it.name)}</span>
     <span class="tmeta">${where} · ${fmtSize(it.size)}</span>
-    <span class="tags">${tags}</span>
+    <span class="tags">${tags.join('')}</span>
   </li>`;
 }
 
 function folderRow(node, depth, newDirs, { icon = 'folder', isNew } = {}) {
   const ids = collectIds(node);
   state.folderItems.set(node.abs, ids);
+  // 파일이 아주 많을 때는 하위 폴더를 접힌 채로 시작한다. 한 번 펼친 폴더는 그대로 둔다.
+  if (state.autoCollapse && depth >= 1 && !state.collapsed.has(`auto:${node.abs}`)) {
+    state.collapsed.add(`auto:${node.abs}`);
+    state.collapsed.add(node.abs);
+  }
   const collapsed = state.collapsed.has(node.abs);
   const fresh = isNew ?? newDirs.has(node.abs);
   const children = [...node.children.values()]
@@ -307,9 +347,12 @@ function syncFolderChecks() {
 
 function renderPreview() {
   const scan = state.scan;
+  renderIntro();
+  renderResult();
   if (!scan) {
     $('#plan').innerHTML = '';
     $('#unmatched').innerHTML = '';
+    $('#blocked').innerHTML = '';
     updateApplyButton();
     return;
   }
@@ -325,6 +368,7 @@ function renderPreview() {
     trash.length ? L(`휴지통 ${trash.length}개`, `${trash.length} to Trash`) : '',
     newDirs.size ? L(`새 폴더 ${newDirs.size}개`, `${newDirs.size} new folders`) : '',
     unmatched.length ? L(`규칙 밖 ${unmatched.length}개`, `${unmatched.length} unmatched`) : '',
+    scan.blocked?.length ? L(`옮길 수 없음 ${scan.blocked.length}개`, `${scan.blocked.length} can't move`) : '',
   ]
     .filter(Boolean)
     .join(' · ');
@@ -341,6 +385,7 @@ function renderPreview() {
       <div>
         <div class="block-title">${L('정리하면 이렇게 돼요', 'After tidying')}<span class="count">${items.length}</span></div>
         <div class="block-sub">${L('폴더 옆 ▾를 누르면 접고 펼 수 있어요. 체크를 풀면 그 파일은 그대로 둬요.', 'Click ▾ next to a folder to collapse it. Uncheck a file to leave it where it is.')}</div>
+        ${scan.truncated ? `<div class="block-sub warn-text">${L('파일이 많아 20,000개(폴더 깊이 8단계)까지만 봤어요. 정리한 뒤 다시 보기를 눌러 주세요.', 'There are a lot of files, so only the first 20,000 (8 folders deep) were checked. Tidy, then press Refresh.')}</div>` : ''}
       </div>
       <div class="block-actions">
         ${visionButton(items)}
@@ -368,7 +413,7 @@ function renderPreview() {
         <div class="block-head">
           <div>
             <div class="block-title">${L('규칙에 안 걸린 파일', 'Not matched by any rule')}<span class="count">${unmatched.length}</span></div>
-            <div class="block-sub">${L('Claude에게는 파일 이름·크기·날짜와 폴더 목록만 보내요. 파일 내용은 안 보내요.', 'Claude only gets file names, sizes, dates and your folder list, never file contents.')}</div>
+            <div class="block-sub">${L('얘네는 어디 둘지 모르겠어요. ', "Not sure where these go. ")}${L('Claude에게는 파일 이름·크기·날짜와 폴더 목록만 보내요. 파일 내용은 안 보내요.', 'Claude only gets file names, sizes, dates and your folder list, never file contents.')}</div>
           </div>
           ${aiButton}
         </div>
@@ -380,7 +425,85 @@ function renderPreview() {
         ${state.aiNoSuggestion.length ? `<div class="note">${L(`Claude가 확신하지 못한 ${state.aiNoSuggestion.length}개는 그대로 둬요.`, `Claude wasn't sure about ${state.aiNoSuggestion.length}, so they stay put.`)}</div>` : ''}
       </div>`
     : '';
+  renderBlocked();
   updateApplyButton();
+}
+
+// 규칙에는 맞지만 목적지가 정리할 폴더 밖이라 옮길 수 없는 파일. 계획에 넣지 않고 이유와 고치는 길을 보여 준다.
+function renderBlocked() {
+  const blocked = state.scan?.blocked || [];
+  if (!blocked.length) {
+    $('#blocked').innerHTML = '';
+    return;
+  }
+  const byDir = new Map();
+  for (const it of blocked) {
+    const dir = dirOf(it.dest);
+    if (!byDir.has(dir)) byDir.set(dir, []);
+    byDir.get(dir).push(it);
+  }
+  $('#blocked').innerHTML = `<div class="block">
+    <div class="block-head">
+      <div>
+        <div class="block-title">${L('옮길 수 없는 파일', "Can't be moved")}<span class="count">${blocked.length}</span></div>
+        <div class="block-sub">${L('규칙의 목적지가 정리할 폴더에 없는 곳이에요. Smash!는 정리할 폴더 밖으로는 옮기지 않아요. 그 폴더를 정리할 폴더로 추가하거나 규칙의 목적지를 바꿔 주세요.', "These rules point to a place that isn't one of your folders. Smash! never moves files outside them. Add that folder or change the rule's destination.")}</div>
+      </div>
+    </div>
+    ${[...byDir.entries()]
+      .map(
+        ([dir, items]) => `<div class="blocked-group">
+        <div class="blocked-head"><span>→ <b>${esc(contract(dir))}</b> <span class="muted">${L(`규칙 '${esc(items[0].reason)}'`, `rule '${esc(items[0].reason)}'`)}</span></span>
+          <button class="ghost small" data-add-target-path="${esc(dir)}">${L('정리할 폴더로 추가', 'Add as a folder')}</button></div>
+        <ul class="rows">${items
+          .slice(0, 8)
+          .map((it) => `<li class="plain-row"><span class="ficon">${ico('file')}</span><span class="fname" title="${esc(it.srcLabel)}">${esc(it.name)}</span><span class="dest">${fmtSize(it.size)}</span></li>`)
+          .join('')}</ul>
+        ${items.length > 8 ? `<div class="note">${L(`외 ${items.length - 8}개`, `and ${items.length - 8} more`)}</div>` : ''}
+      </div>`,
+      )
+      .join('')}
+  </div>`;
+}
+
+// 방금 정리에서 옮기지 못한 파일. 닫기 전까지 남아 있다.
+function renderResult() {
+  const r = state.lastResult;
+  if (!r || (!r.failed.length && !r.historyError)) {
+    $('#result').innerHTML = '';
+    return;
+  }
+  $('#result').innerHTML = `<details class="block result-band" open>
+    <summary><span><b>${L(`${r.failed.length}개는 그대로 있어요`, `${r.failed.length} files stayed where they were`)}</b> <span class="muted">${L(`${r.ok}개는 치웠어요`, `${r.ok} were tidied`)}</span></span>
+      <button class="link" id="result-close">${L('닫기', 'Dismiss')}</button></summary>
+    ${r.historyError ? `<div class="note warn-text">${esc(r.historyError)} ${L('기록을 남길 수 없으면 되돌릴 수 없어서 옮기지 않았어요.', "Without a history entry it couldn't be undone, so nothing more was moved.")}</div>` : ''}
+    <ul class="rows">${r.failed.map((f) => `<li class="plain-row"><span class="ficon">${ico('file')}</span><span class="fname">${esc(f.name)}</span><span class="dest">${esc(f.reason)}</span></li>`).join('')}</ul>
+  </details>`;
+}
+
+// 처음 켰을 때 한 번 보여 주는 안내. 소리가 난다는 것도 여기서 알린다.
+function renderIntro() {
+  const show = state.config && !state.config.settings.introSeen;
+  $('#intro').innerHTML = show
+    ? `<div class="block intro">
+        <div class="intro-text">
+          <b>${L('처음이시죠?', 'First time here?')}</b>
+          <span>${L('아래 미리보기에서 확인하고 "짝! 정리하기"를 누르면 그대로 옮겨요. 옮긴 건 기록 탭에서 되돌릴 수 있어요.', 'Check the preview below, then press "Smack! Tidy up". Anything moved can be undone in the History tab.')}</span>
+          <span>${L('정리할 때 "찰싹" 소리가 나요. 설정 탭에서 끌 수 있어요.', 'Tidying makes a smack sound. You can turn it off in Settings.')}</span>
+        </div>
+        <button class="ghost small" id="intro-ok">${L('알겠어요', 'Got it')}</button>
+      </div>`
+    : '';
+}
+
+async function addTargetPath(path) {
+  const label = contract(path);
+  if (!state.config.targets.some((t) => expand(t.path) === path)) {
+    state.config.targets.push({ id: `t_${Date.now().toString(36)}`, path: label, auto: false, rules: [], autoTrash: true });
+    await saveConfig();
+    toast(L(`${baseName(path)}을(를) 정리할 폴더로 추가했어요. 이제 그 폴더로 옮길 수 있어요.`, `Added ${baseName(path)} as a folder. Files can move there now.`), 4000);
+  }
+  renderRules();
+  await doScan();
 }
 
 const MEDIA_EXT = /\.(jpe?g|png|gif|heic|heif|webp|tiff?|bmp|mp4|mov|m4v|avi|mkv|webm)$/i;
@@ -457,15 +580,23 @@ async function doApply() {
   const items = checkedItems();
   if (!items.length) return;
   state.busy = true;
+  state.lastResult = null;
+  SmashSound.warm();
   updateApplyButton();
-  $('#apply').innerHTML = `<span class="spinner"></span>${L('정리 중…', 'Tidying…')}`;
+  const btn = $('#apply');
+  btn.classList.add('struck');
+  setTimeout(() => btn.classList.remove('struck'), 140);
+  btn.innerHTML = `<span class="spinner"></span>${L('정리 중…', 'Tidying…')}`;
+  // 손바닥이 내리치는 순간에 맞은 행을 뺀다
+  state.struckIds = items.map((it) => it.id);
   try {
-    const { results } = await tidy.apply(items);
+    const { results, historyError } = await tidy.apply(items);
     const ok = results.filter((r) => r.ok).length;
-    const failed = results.filter((r) => !r.ok);
+    const failed = SmashLogic.failures(results);
+    state.lastResult = { ok, failed, historyError: historyError || null };
     toast(
       failed.length
-        ? L(`${ok}개 정리, ${failed.length}개 실패: ${failed[0].name} — ${failed[0].message}`, `Tidied ${ok}, ${failed.length} failed: ${failed[0].name} — ${failed[0].message}`)
+        ? L(`${ok}개 정리, ${failed.length}개는 그대로 있어요. 미리보기 위에서 이유를 볼 수 있어요.`, `Tidied ${ok}, ${failed.length} stayed put. See why above the preview.`)
         : L(`짝! ${ok}개 치웠어요. 기록 탭에서 되돌릴 수 있어요.`, `Smack! Tidied ${ok} files. You can undo it in the History tab.`),
       failed.length ? 6000 : 3500,
     );
@@ -473,8 +604,29 @@ async function doApply() {
     toast(L(`실행 실패: ${err.message}`, `Failed: ${err.message}`), 6000);
   } finally {
     state.busy = false;
+    state.struckIds = null;
     await doScan();
   }
+}
+
+// 타격 순간: 소리를 내고, 정리 중인 행을 위에서부터 납작하게 뺀다.
+function onHit({ level }) {
+  if (state.config?.settings.sound !== false) SmashSound.play(level);
+  const ids = state.struckIds;
+  if (!ids || reducedMotion()) return;
+  // 화면에 보이는 순서(위에서부터)로 뺀다
+  const struck = new Set(ids);
+  const rows = [...document.querySelectorAll('[data-row]')].filter((row) => struck.has(row.dataset.row));
+  SmashLogic.staggerDelays(rows.length).forEach((delay, i) => {
+    rows[i].style.animationDelay = `${delay}ms`;
+    rows[i].classList.add('slapped');
+  });
+}
+
+function onProgress({ done, total }) {
+  // 금방 끝나는 정리는 숫자를 보여 주지 않는다
+  if (!state.busy || total < 30) return;
+  $('#apply').innerHTML = `<span class="spinner"></span>${L('정리 중…', 'Tidying…')} ${done.toLocaleString()} / ${total.toLocaleString()}`;
 }
 
 // ---------- 규칙 ----------
@@ -498,29 +650,40 @@ function destText(dest, owner) {
   return contract(full);
 }
 
+/** 규칙 목적지가 정리할 폴더 안인지 */
+function destInside(dest, owner) {
+  const t = owner || currentTarget();
+  return !t || SmashLogic.destInsideTargets(dest, t.path, state.config.targets, state.home, state.sep);
+}
+
 const groupLabel = (g) =>
   ({ auto: L('용도·이름·시간별로 나눠서', 'split by purpose, name & time'), month: L('연·월별로 나눠서', 'split by month') })[g] || '';
 
 function ruleSentence(r, owner) {
   const parts = [];
-  if (r.match.olderThanDays) parts.push(`<span class="chip soft">${L(`${r.match.olderThanDays}일 지난`, `older than ${r.match.olderThanDays} days`)}</span>`);
+  if (r.match.olderThanDays) parts.push(`<span class="chip soft">${L(`받은 지 ${r.match.olderThanDays}일 지난`, `received over ${r.match.olderThanDays} days ago`)}</span>`);
+  const froms = r.match.fromIncludes || [];
+  if (froms.length) parts.push(L(`${chipList(froms, 3)} 에서 받은`, `from ${chipList(froms, 3)}`));
   if (r.match.nameIncludes.length) parts.push(L(`이름에 ${chipList(r.match.nameIncludes.map((w) => `"${w}"`), 3)} 가 들어간`, `with ${chipList(r.match.nameIncludes.map((w) => `"${w}"`), 3)} in the name`));
   if (r.match.extensions.length) parts.push(chipList(r.match.extensions));
   // 영어는 "확장자 files 기간 이름" 순서가 자연스럽다.
-  const [ageEn, nameEn, extEn] = [
-    r.match.olderThanDays ? parts[0] : '',
-    r.match.nameIncludes.length ? parts[r.match.olderThanDays ? 1 : 0] : '',
-    r.match.extensions.length ? parts[parts.length - 1] : '',
-  ];
+  const ageEn = r.match.olderThanDays ? parts[0] : '';
+  const fromEn = froms.length ? parts[r.match.olderThanDays ? 1 : 0] : '';
+  const nameEn = r.match.nameIncludes.length ? parts[(r.match.olderThanDays ? 1 : 0) + (froms.length ? 1 : 0)] : '';
+  const extEn = r.match.extensions.length ? parts[parts.length - 1] : '';
   const what = parts.length
-    ? L(`${parts.join(' ')} 파일은`, [extEn, 'files', ageEn, nameEn].filter(Boolean).join(' '))
+    ? L(`${parts.join(' ')} 파일은`, [extEn, 'files', ageEn, fromEn, nameEn].filter(Boolean).join(' '))
     : `<span class="warn-text">${L('조건이 없어 적용되지 않아요', 'No conditions, so it never applies')}</span>`;
   const how =
     r.action === 'trash'
       ? L('<b class="to trash">휴지통</b>으로 보내요', 'go to the <b class="to trash">Trash</b>')
       : L(`<b class="to">${esc(destText(r.dest, owner))}</b> 로 옮겨요`, `move to <b class="to">${esc(destText(r.dest, owner))}</b>`);
   const sub = r.action === 'move' && groupLabel(r.group) ? ` <span class="chip soft">${groupLabel(r.group)}</span>` : '';
-  return `${what} → ${how}${sub}`;
+  const outside =
+    r.action === 'move' && !destInside(r.dest, owner)
+      ? ` <span class="tag warn" title="${L('정리할 폴더 밖이라 이 규칙은 실행되지 않아요', "Outside your folders, so this rule won't run")}">${L('정리할 폴더 밖', 'Outside your folders')}</span>`
+      : '';
+  return `${what} → ${how}${sub}${outside}`;
 }
 
 function ruleCard(r, i, total, owner) {
@@ -551,12 +714,13 @@ function ruleCard(r, i, total, owner) {
 }
 
 function newDraft(from) {
-  const r = from || { name: '', match: { extensions: [], nameIncludes: [], olderThanDays: 0 }, action: 'move', dest: '', group: 'auto' };
+  const r = from || { name: '', match: { extensions: [], nameIncludes: [], olderThanDays: 0, fromIncludes: [] }, action: 'move', dest: '', group: 'auto' };
   return {
     id: from?.id || null,
     name: r.name,
     exts: [...r.match.extensions],
     words: [...r.match.nameIncludes],
+    froms: [...(r.match.fromIncludes || [])],
     days: r.match.olderThanDays || 0,
     action: r.action,
     dest: r.dest || '',
@@ -568,7 +732,7 @@ function newDraft(from) {
 const draftRule = (d) => ({
   name: d.name.trim() || L('새 규칙', 'New rule'),
   enabled: true,
-  match: { extensions: d.exts, nameIncludes: d.words, olderThanDays: d.days },
+  match: { extensions: d.exts, nameIncludes: d.words, olderThanDays: d.days, fromIncludes: d.froms },
   action: d.action,
   dest: d.action === 'trash' ? '' : d.dest.trim(),
   group: d.action === 'trash' ? '' : d.group,
@@ -582,10 +746,10 @@ const groupOptions = () => [
 
 const dayOptions = () => [
   [0, L('바로', 'Right away')],
-  [1, L('하루 지나면', 'After a day')],
-  [7, L('일주일 지나면', 'After a week')],
-  [30, L('한 달 지나면', 'After a month')],
-  [90, L('석 달 지나면', 'After 3 months')],
+  [1, L('받은 지 하루', 'A day after it arrives')],
+  [7, L('받은 지 일주일', 'A week after')],
+  [30, L('받은 지 한 달', 'A month after')],
+  [90, L('받은 지 석 달', '3 months after')],
 ];
 
 function matchLineHtml(d) {
@@ -604,6 +768,11 @@ function matchLineHtml(d) {
 function destPreviewHtml(d) {
   if (!d.dest) return L('옮길 폴더를 골라 주세요.', 'Pick a folder to move them to.');
   const label = destText(d.dest);
+  if (!destInside(d.dest)) {
+    // 실행 단계는 정리할 폴더 밖으로 옮기지 않는다. 저장하기 전에 알려 준다.
+    return `→ <b>${esc(label)}</b> <span class="warn-text">${L('정리할 폴더에 없는 곳이에요. 이대로는 옮겨지지 않아요.', "That isn't one of your folders, so nothing would move there.")}</span>
+      <button type="button" class="ghost small" id="dest-add-target">${L('정리할 폴더로 추가', 'Add as a folder')}</button>`;
+  }
   const exists = state.folders.some((f) => destText(f) === label);
   return `→ <b>${esc(label)}</b>${exists ? '' : ` <span class="tag new">${L('새 폴더로 만들어요', 'Will be created')}</span>`}`;
 }
@@ -635,9 +804,19 @@ function editorHtml() {
         <div class="field-label">${L('이름에 이 단어가 있으면', 'If the name contains')} <span class="muted">${L('(선택)', '(optional)')}</span></div>
         <div class="tag-box">${tags(d.words, 'word')}<input id="d-word" type="text" placeholder="${L('예: 계약서, 영수증 (엔터)', 'e.g. contract, receipt (Enter)')}" /></div>
       </div>
+      ${
+        state.platform === 'linux'
+          ? ''
+          : `<div class="field">
+        <div class="field-label">${L('받은 곳 주소에 이 단어가 있으면', 'If it was downloaded from')} <span class="muted">${L('(선택)', '(optional)')}</span></div>
+        <div class="tag-box">${tags(d.froms, 'from')}<input id="d-from" type="text" placeholder="${L('예: github.com (엔터)', 'e.g. github.com (Enter)')}" /></div>
+        <div class="hint">${L('브라우저가 파일에 남긴 내려받은 주소를 봐요. 기록이 없는 파일은 맞지 않아요. 주소는 Claude에 보내지 않아요.', 'Uses the download address the browser saved with the file. Files without one never match. The address is never sent to Claude.')}</div>
+      </div>`
+      }
       <div class="field">
         <div class="field-label">${L('언제?', 'When?')}</div>
         <div class="seg">${dayOptions().map(([v, l]) => `<button type="button" data-days="${v}" class="${d.days === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <div class="hint">${L('이 폴더에 들어온 날부터 세요. 그 뒤에 고쳤으면 고친 날부터 세요. 파일에 적힌 옛 날짜는 보지 않아요.', 'Counted from the day the file landed in this folder, or from the last edit if later. The date stored inside the file is ignored.')}</div>
       </div>
     </div>
 
@@ -684,7 +863,7 @@ function refreshMatches() {
   matchTimer = setTimeout(async () => {
     if (state.draft !== d) return;
     const rule = draftRule(d);
-    const hasCondition = rule.match.extensions.length || rule.match.nameIncludes.length || rule.match.olderThanDays;
+    const hasCondition = rule.match.extensions.length || rule.match.nameIncludes.length || rule.match.fromIncludes.length || rule.match.olderThanDays;
     try {
       d.matches = hasCondition ? await tidy.testRule(state.targetId, rule) : [];
     } catch {
@@ -790,7 +969,7 @@ function renderRules() {
             '지금 규칙, 폴더 목록, 파일 종류별 개수와 파일 이름 일부(최대 60개)를 Claude에 보내 대분류·소분류 규칙을 한 벌로 만들어요. 파일 내용은 안 보내요. 겹치는 규칙은 새로 만들지 않고 고치는 쪽으로 보여 줘요.',
             'Sends your current rules, folder list, file counts by type and up to 60 file names (never contents) to Claude to make a full set of categories and subcategories. Overlapping rules show up as updates, not duplicates.',
           )
-        : L('Claude Code CLI가 있으면 말로 규칙을 만들 수 있어요. (자동 정리 · Claude 탭)', 'With the Claude Code CLI you can describe rules in words. (Auto-tidy · Claude tab)')
+        : L('Claude Code CLI가 있으면 말로 규칙을 만들 수 있어요. (설정 탭)', 'With the Claude Code CLI you can describe rules in words. (Settings tab)')
     }</div>
   </div>
   ${proposalHtml()}
@@ -823,7 +1002,7 @@ function openEditor(rule) {
 
 function addTag(kind, raw) {
   const d = state.draft;
-  const list = kind === 'ext' ? d.exts : d.words;
+  const list = { ext: d.exts, word: d.words, from: d.froms }[kind];
   for (let v of raw.split(kind === 'ext' ? /[,\s]+/ : /,+/)) {
     v = kind === 'ext' ? v.trim().replace(/^\*?\./, '').toLowerCase() : v.trim();
     if (v && !list.includes(v)) list.push(v);
@@ -835,8 +1014,9 @@ async function saveDraft() {
   const t = currentTarget();
   if ($('#d-ext')?.value.trim()) addTag('ext', $('#d-ext').value);
   if ($('#d-word')?.value.trim()) addTag('word', $('#d-word').value);
+  if ($('#d-from')?.value.trim()) addTag('from', $('#d-from').value);
   const rule = draftRule(d);
-  if (!rule.match.extensions.length && !rule.match.nameIncludes.length && !rule.match.olderThanDays) {
+  if (!rule.match.extensions.length && !rule.match.nameIncludes.length && !rule.match.fromIncludes.length && !rule.match.olderThanDays) {
     toast(L('1단계에서 파일 종류나 이름 단어, 기간 중 하나는 골라 주세요.', 'In step 1, pick a file kind, a word in the name or an age.'));
     return;
   }
@@ -854,7 +1034,12 @@ async function saveDraft() {
   await saveConfig();
   renderRules();
   await doScan();
-  toast(L('규칙을 저장했어요. 맨 위에 넣어서 먼저 적용돼요.', 'Rule saved at the top, so it applies first.'));
+  toast(
+    rule.action === 'move' && !destInside(rule.dest)
+      ? L('규칙을 저장했어요. 다만 목적지가 정리할 폴더 밖이라 아직 옮겨지지 않아요.', "Rule saved, but its destination is outside your folders, so it won't move anything yet.")
+      : L('규칙을 저장했어요. 맨 위에 넣어서 먼저 적용돼요.', 'Rule saved at the top, so it applies first.'),
+    4000,
+  );
 }
 
 async function makeRuleFromText() {
@@ -940,39 +1125,78 @@ async function loadFolders() {
 // ---------- 기록 ----------
 
 async function renderHistory() {
-  const runs = await tidy.history();
-  $('#undo').disabled = !runs.some((r) => !r.undone);
+  const { runs, week } = await tidy.history();
+  $('#history-hint').textContent = state.canRestoreTrash
+    ? L('정리마다 골라서 되돌릴 수 있어요. 휴지통으로 보낸 파일도 휴지통에 남아 있으면 같이 꺼내 와요.', 'Undo any run. Files sent to the Trash come back too, as long as they are still in the Trash.')
+    : L('정리마다 골라서 되돌릴 수 있어요. 휴지통으로 보낸 파일은 휴지통에서 직접 꺼내야 해요.', 'Undo any run. Files sent to the Recycle Bin have to be taken out yourself.');
+  $('#undo').disabled = !runs.some((r) => SmashLogic.runStatus(r).canUndo);
+  $('#week').innerHTML =
+    week && week.moved + week.trashed > 0
+      ? `<div class="week-line">${L(`최근 7일 동안 ${week.moved + week.trashed}개 치웠어요`, `${week.moved + week.trashed} files tidied in the last 7 days`)}${
+          week.trashed ? ` · ${L(`휴지통 ${SmashLogic.fmtBytes(week.trashBytes)}`, `${SmashLogic.fmtBytes(week.trashBytes)} to Trash`)}` : ''
+        }</div>`
+      : '';
   const who = { 'claude-mcp': '<span class="tag ai">Claude</span>', auto: `<span class="tag auto">${L('자동', 'Auto')}</span>` };
+  const stateTag = {
+    undone: `<span class="tag warn">${L('되돌림', 'Undone')}</span>`,
+    interrupted: `<span class="tag warn" title="${L('정리하다가 앱이 끝났어요. 옮긴 만큼은 되돌릴 수 있어요.', 'The app quit partway. Whatever was moved can still be undone.')}">${L('중단됨', 'Interrupted')}</span>`,
+    running: `<span class="tag">${L('정리 중', 'Running')}</span>`,
+    failed: `<span class="tag warn">${L('옮긴 것 없음', 'Nothing moved')}</span>`,
+  };
   $('#history').innerHTML = runs.length
     ? `<div class="block">${runs
         .map((r) => {
+          const st = SmashLogic.runStatus(r);
           const moved = r.ops.filter((o) => o.type === 'move').length;
           const trashed = r.ops.length - moved;
+          const failed = r.failed || [];
           const when = new Date(r.at).toLocaleString(L('ko-KR', 'en-US'), { dateStyle: 'medium', timeStyle: 'short' });
+          const tag = st.key === 'partial' ? `<span class="tag warn">${L(`일부 되돌림 · 남은 ${st.left}개`, `Partly undone · ${st.left} left`)}</span>` : stateTag[st.key] || '';
+          const button = st.canUndo
+            ? `<button class="ghost small" data-undo-run="${esc(r.id)}">${st.key === 'partial' ? L('남은 것 다시 되돌리기', 'Retry the rest') : L('되돌리기', 'Undo')}</button>`
+            : '';
           return `<details class="run">
-          <summary><span>${who[r.source] || `<span class="tag">${L('앱', 'App')}</span>`} ${esc(when)} · ${L('옮김', 'moved')} ${moved}${trashed ? ` · ${L('휴지통', 'Trash')} ${trashed}` : ''}</span>${
-            r.undone ? `<span class="tag warn">${L('되돌림', 'Undone')}</span>` : ''
-          }</summary>
+          <summary><span>${who[r.source] || `<span class="tag">${L('앱', 'App')}</span>`} ${esc(when)} · ${L('옮김', 'moved')} ${moved}${trashed ? ` · ${L('휴지통', 'Trash')} ${trashed}` : ''}${
+            failed.length ? ` · ${L('실패', 'failed')} ${failed.length}` : ''
+          }</span><span class="run-side">${tag}${button}</span></summary>
           <div class="run-ops">${r.ops
-            .map((o) => `<div title="${esc(o.fromLabel)}">${o.type === 'move' ? `${esc(o.fromLabel)} → ${esc(o.toLabel)}` : `${L('휴지통', 'Trash')} ← ${esc(o.fromLabel)}`}</div>`)
-            .join('')}</div>
+            .map(
+              (o) =>
+                `<div class="${o.undone ? 'op-undone' : ''}" title="${esc(o.fromLabel)}">${o.type === 'move' ? `${esc(o.fromLabel)} → ${esc(o.toLabel)}` : `${L('휴지통', 'Trash')} ← ${esc(o.fromLabel)}`}${
+                  o.undone ? ` <span class="muted">${L('(돌려놓음)', '(put back)')}</span>` : ''
+                }</div>`,
+            )
+            .join('')}${failed.map((f) => `<div class="op-failed" title="${esc(f.file)}">${L('못 옮김', 'Not moved')}: ${esc(f.file)} <span class="muted">${esc(f.reason)}</span></div>`).join('')}</div>
         </details>`;
         })
         .join('')}</div>`
     : `<div class="block"><div class="empty">${L('아직 정리한 기록이 없어요.', 'Nothing tidied yet.')}</div></div>`;
 }
 
-async function doUndo() {
+async function doUndo(runId) {
   try {
-    const res = await tidy.undo();
+    const res = await tidy.undo(runId);
     if (!res.ok) return toast(res.message);
-    const extra = res.trashed.length
-      ? L(` 휴지통으로 보낸 ${res.trashed.length}개는 휴지통에서 직접 꺼내 주세요.`, ` Take the ${res.trashed.length} sent to the Trash back out yourself.`)
-      : '';
-    const fail = res.failed.length
-      ? L(` ${res.failed.length}개는 되돌리지 못했어요(${res.failed[0].reason}).`, ` ${res.failed.length} couldn't be undone (${res.failed[0].reason}).`)
-      : '';
-    toast(L(`${res.restored}개 파일을 원래 자리로 돌려놨어요.`, `Put ${res.restored} files back where they were.`) + extra + fail, 6000);
+    // 스매시의 반대 동작: 손바닥으로 가볍게 쓰다듬는다
+    if (!reducedMotion()) {
+      const icon = $('.brand img');
+      icon.classList.remove('pat');
+      void icon.offsetWidth;
+      icon.classList.add('pat');
+    }
+    const parts = [L(`미안, 없던 일로. ${res.restored}개를 원래 자리로 돌려놨어요.`, `Sorry, never happened. Put ${res.restored} files back where they were.`)];
+    if (res.restoredFromTrash) parts.push(L(`휴지통에서 ${res.restoredFromTrash}개를 꺼냈어요.`, `${res.restoredFromTrash} came back out of the Trash.`));
+    if (res.failed.length) {
+      parts.push(
+        L(
+          `${res.failed.length}개는 남겼어요(${res.failed[0].reason}). 기록에서 다시 시도할 수 있어요.`,
+          `${res.failed.length} were left (${res.failed[0].reason}). You can retry from the history.`,
+        ),
+      );
+    }
+    if (res.trashed.length) parts.push(L(`휴지통으로 보낸 ${res.trashed.length}개는 휴지통에서 직접 꺼내 주세요.`, `Take the ${res.trashed.length} sent to the Trash back out yourself.`));
+    toast(parts.join(' '), 7000);
+    if (res.trashed.length) tidy.openTrash().catch(() => {});
   } catch (err) {
     toast(L(`되돌리기 실패: ${err.message}`, `Undo failed: ${err.message}`), 6000);
   }
@@ -980,7 +1204,7 @@ async function doUndo() {
   await doScan();
 }
 
-// ---------- 자동 정리 · Claude ----------
+// ---------- 설정 (자동 정리 · 효과 · Claude) ----------
 
 function setPill() {
   const s = state.integration;
@@ -1069,20 +1293,22 @@ function renderSettings() {
     <div class="settings-list">
       ${cfg.targets
         .map(
-          (t) => `<div class="setting-row"><div><b>${esc(targetName(t))}</b><div class="muted">${esc(t.path)} · ${L(`켜진 규칙 ${t.rules.filter((r) => r.enabled).length}개`, `${t.rules.filter((r) => r.enabled).length} rules on`)}</div></div>${switchHtml(
-            `data-auto="${esc(t.id)}"`,
-            t.auto,
-          )}</div>`,
+          (t) => `<div class="setting-row"><div><b>${esc(targetName(t))}</b><div class="muted">${esc(t.path)} · ${L(`켜진 규칙 ${t.rules.filter((r) => r.enabled).length}개`, `${t.rules.filter((r) => r.enabled).length} rules on`)}${
+            t.auto && t.autoTrash === false ? ` · ${L('휴지통 규칙은 자동으로 안 해요', 'Trash rules stay manual')}` : ''
+          }</div></div>${switchHtml(`data-auto="${esc(t.id)}"`, t.auto)}</div>${state.autoConfirm?.id === t.id ? autoConfirmHtml(t) : ''}`,
         )
         .join('')}
       <div class="setting-row"><div><b>${L('기다리는 시간', 'Wait time')}</b><div class="muted">${L('파일이 이만큼 그대로면 다 받아진 걸로 봐요', 'A file that stays the same this long counts as downloaded')}</div></div>
         <select id="auto-delay">${delays.map(([v, l]) => `<option value="${v}" ${st.autoDelaySec === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="setting-row"><div><b>${L('정리할 때 등짝 스매시 효과', 'Smash effect when tidying')}</b><div class="muted">${L('정리하기를 누르면 손바닥이 "찰싹!!" 내리쳐요. 자동 정리 때는 안 나와요', 'A palm comes down with a "SMACK!!" when you press tidy. Not shown for auto-tidy')}</div></div>${switchHtml('id="set-smash"', st.smash)}</div>
+      <div class="setting-row"><div><b>${L('정리할 때 소리', 'Sound when tidying')}</b><div class="muted">${L('손바닥이 닿는 순간 "찰싹" 소리가 나요. 파일이 많을수록 세게 쳐요. 자동 정리 때는 안 나요', 'A smack sound at the moment of impact, harder the more files there are. Silent for auto-tidy')}</div></div>${switchHtml('id="set-sound"', st.sound !== false)}</div>
+      <div class="setting-row"><div><b>${L('쌓이면 잔소리하기', 'Nag me when files pile up')}</b><div class="muted">${L('자동 정리를 안 켠 폴더에 치울 파일이 20개·60개·150개 쌓이면 배너로 한 번씩 알려요. 폴더마다 하루 한 번까지', 'When a folder without auto-tidy piles up 20, 60 or 150 files to tidy, a banner tells you once. At most once a day per folder')}</div></div>${switchHtml('id="set-nag"', st.nag !== false)}</div>
+      <div class="setting-row"><div><b>${L('일요일 저녁 주간 성적표', 'Weekly report on Sunday evening')}</b><div class="muted">${L('이번 주에 몇 개 치웠는지 배너로 한 번 알려요', 'One banner with how much was tidied this week')}</div></div>${switchHtml('id="set-weekly"', st.weekly !== false)}</div>
       <div class="setting-row"><div><b>${L('정리한 뒤 폴더 열기', 'Open the folder afterwards')}</b><div class="muted">${L(
         `정리하기를 누르면 파일이 들어간 폴더를 ${state.platform === 'darwin' ? 'Finder' : '탐색기'}로 열어 줘요`,
         `Opens the folder the files went to in ${state.platform === 'darwin' ? 'Finder' : 'Explorer'}`,
       )}</div></div>${switchHtml('id="set-open"', st.openAfter)}</div>
-      <div class="setting-row"><div><b>${L('정리하면 알림 보내기', 'Notify me after tidying')}</b></div>${switchHtml('id="set-notify"', st.notify)}</div>
+      <div class="setting-row"><div><b>${L('정리하면 알림 보내기', 'Notify me after tidying')}</b><div class="muted">${L('끄면 잔소리와 주간 성적표 배너도 안 떠요', 'Turning this off also silences the nag and weekly banners')}</div></div>${switchHtml('id="set-notify"', st.notify)}</div>
       <div class="setting-row"><div><b>${L('컴퓨터 켤 때 같이 실행', 'Open at login')}</b><div class="muted">${L('창 없이 조용히 시작해요 (설치한 앱에서만 동작)', 'Starts quietly without a window (installed app only)')}</div></div>${switchHtml('id="set-login"', st.openAtLogin)}</div>
       <div class="setting-row"><div><b>언어 · Language</b><div class="muted">${L('바꾸면 화면을 다시 불러와요', 'The window reloads when you change it')}</div></div>
         <select id="set-lang">${[
@@ -1159,6 +1385,69 @@ function renderSettings() {
     <p class="hint">${L('설정 파일', 'Settings file')}: ${esc(state.configPath)}</p>`;
 }
 
+// 자동 정리를 켜기 전에, 지금 쌓여 있는 파일을 어떻게 치울지 한 번 보여 준다. 켜는 순간 말없이 치우지 않는다.
+function autoConfirmHtml(t) {
+  const c = state.autoConfirm;
+  if (!c.scan) return `<div class="auto-confirm"><span class="spinner"></span>${L('지금 쌓인 파일을 살펴보는 중…', 'Looking at what is there now…')}</div>`;
+  const all = c.scan.items;
+  const trash = all.filter((it) => it.action === 'trash' && !it.note);
+  const items = c.autoTrash ? all : all.filter((it) => !trash.includes(it));
+  const line = (it) =>
+    `<li class="plain-row"><span class="ficon">${ico(it.action === 'trash' ? 'trash' : 'file')}</span><span class="fname" title="${esc(it.srcLabel)}">${esc(it.name)}</span><span class="dest">${
+      it.action === 'trash' ? L('휴지통', 'Trash') : `→ ${esc(destText(dirOf(it.dest), t))}`
+    }</span></li>`;
+  const delay = state.config.settings.autoDelaySec;
+  return `<div class="auto-confirm">
+    <div><b>${
+      items.length
+        ? L(`켜면 지금 ${esc(targetName(t))}에 쌓인 ${items.length}개를 이렇게 치워요`, `Turning it on tidies the ${items.length} files already in ${esc(targetName(t))} like this`)
+        : L(`지금 ${esc(targetName(t))}에는 치울 게 없어요. 새 파일이 들어오면 정리해요.`, `Nothing to tidy in ${esc(targetName(t))} right now. New files will be tidied as they arrive.`)
+    }</b></div>
+    ${items.length ? `<ul class="rows">${items.slice(0, 8).map(line).join('')}</ul>${items.length > 8 ? `<div class="note">${L(`외 ${items.length - 8}개`, `and ${items.length - 8} more`)}</div>` : ''}` : ''}
+    ${
+      t.rules.some((r) => r.enabled && r.action === 'trash') || trash.length
+        ? `<label class="check-line"><input type="checkbox" id="auto-trash" ${c.autoTrash ? 'checked' : ''} /> ${L(
+            `휴지통으로 보내는 규칙도 자동으로 실행${trash.length ? ` (지금 ${trash.length}개)` : ''}`,
+            `Also run rules that send files to the Trash${trash.length ? ` (${trash.length} now)` : ''}`,
+          )}</label>`
+        : ''
+    }
+    <div class="muted">${L(`켜고 나서 파일이 ${delay}초쯤 그대로면 정리해요. 미리보기 없이 실행되고, 기록 탭에서 되돌릴 수 있어요.`, `Files are tidied once they have been still for about ${delay} seconds. It runs without a preview and can be undone in the History tab.`)}</div>
+    <div class="card-actions">
+      <button class="primary small" id="auto-confirm-on">${L('자동 정리 켜기', 'Turn on auto-tidy')}</button>
+      <button class="ghost small" id="auto-confirm-cancel">${L('취소', 'Cancel')}</button>
+    </div>
+  </div>`;
+}
+
+async function askAuto(id) {
+  const t = state.config.targets.find((x) => x.id === id);
+  if (!t || t.auto) return;
+  state.autoConfirm = { id, scan: null, autoTrash: t.autoTrash !== false };
+  renderSettings();
+  try {
+    const scan = await tidy.scan(id, true);
+    if (state.autoConfirm?.id !== id) return;
+    state.autoConfirm.scan = scan;
+  } catch (err) {
+    state.autoConfirm = null;
+    toast(err.message, 5000);
+  }
+  renderSettings();
+}
+
+async function confirmAuto() {
+  const c = state.autoConfirm;
+  const t = c && state.config.targets.find((x) => x.id === c.id);
+  state.autoConfirm = null;
+  if (!t) return renderSettings();
+  t.auto = true;
+  t.autoTrash = c.autoTrash;
+  await saveConfig();
+  renderSettings();
+  toast(L(`${targetName(t)} 자동 정리를 켰어요. 짝! 하고 지켜볼게요.`, `Auto-tidy on for ${targetName(t)}. I'm watching.`));
+}
+
 async function register(kind) {
   const btn = kind === 'code' ? $('#reg-code') : $('#reg-desktop');
   btn.disabled = true;
@@ -1204,7 +1493,7 @@ function handleDraftClick(el) {
     return true;
   }
   if (el.dataset.untag) {
-    const list = el.dataset.untag === 'ext' ? 'exts' : 'words';
+    const list = { ext: 'exts', word: 'words', from: 'froms' }[el.dataset.untag];
     d[list] = d[list].filter((v) => v !== el.dataset.value);
     renderEditor();
     return true;
@@ -1236,6 +1525,11 @@ document.addEventListener('click', async (e) => {
   if (el.classList.contains('target-btn')) return selectTarget(el.dataset.id);
   if (el.dataset.removeTarget) return removeTarget(el.dataset.removeTarget);
   if (el.dataset.gotoTarget) return selectTarget(el.dataset.gotoTarget);
+  if (el.dataset.undoRun) {
+    e.preventDefault(); // 줄(details)이 같이 펼쳐지지 않게
+    return doUndo(el.dataset.undoRun);
+  }
+  if (el.dataset.addTargetPath) return addTargetPath(el.dataset.addTargetPath);
   if (el.dataset.collapse) {
     const key = el.dataset.collapse;
     if (state.collapsed.has(key)) state.collapsed.delete(key);
@@ -1283,6 +1577,22 @@ document.addEventListener('click', async (e) => {
     case 'save-rule': return saveDraft();
     case 'pick-dest': return pickDest();
     case 'undo': return doUndo();
+    case 'result-close':
+      e.preventDefault();
+      state.lastResult = null;
+      return renderResult();
+    case 'intro-ok':
+      state.config.settings.introSeen = true;
+      renderIntro();
+      return saveConfig();
+    case 'dest-add-target': {
+      const t = currentTarget();
+      return addTargetPath(SmashLogic.resolvePath(t.path, state.draft.dest.trim(), state.home, state.sep)).then(() => renderEditor());
+    }
+    case 'auto-confirm-on': return confirmAuto();
+    case 'auto-confirm-cancel':
+      state.autoConfirm = null;
+      return renderSettings();
     case 'reg-code': return register('code');
     case 'reg-desktop': return register('desktop');
     case 'update-check': return checkUpdate();
@@ -1306,15 +1616,15 @@ document.addEventListener('keydown', (e) => {
   const el = e.target;
   if (e.isComposing) return;
   if (el.id === 'nl-text' && e.key === 'Enter') return makeRuleFromText();
-  if (el.id === 'd-ext' || el.id === 'd-word') {
-    const kind = el.id === 'd-ext' ? 'ext' : 'word';
+  if (el.id === 'd-ext' || el.id === 'd-word' || el.id === 'd-from') {
+    const kind = { 'd-ext': 'ext', 'd-word': 'word', 'd-from': 'from' }[el.id];
     if ((e.key === 'Enter' || e.key === ',') && el.value.trim()) {
       e.preventDefault();
       addTag(kind, el.value);
       return renderEditor(el.id);
     }
     if (e.key === 'Backspace' && !el.value) {
-      const list = kind === 'ext' ? state.draft.exts : state.draft.words;
+      const list = { ext: state.draft.exts, word: state.draft.words, from: state.draft.froms }[kind];
       if (list.length) {
         list.pop();
         return renderEditor(el.id);
@@ -1395,21 +1705,30 @@ document.addEventListener('change', async (e) => {
   }
   if (el.dataset.auto) {
     const t = state.config.targets.find((x) => x.id === el.dataset.auto);
-    t.auto = el.checked;
+    if (el.checked) {
+      // 바로 켜지 않는다. 지금 쌓인 파일을 어떻게 치울지 먼저 보여 준다
+      el.checked = false;
+      return askAuto(t.id);
+    }
+    state.autoConfirm = null;
+    t.auto = false;
     await saveConfig();
     renderSettings();
-    return toast(
-      el.checked
-        ? L(`${targetName(t)} 자동 정리를 켰어요. 짝! 하고 지켜볼게요.`, `Auto-tidy on for ${targetName(t)}. I'm watching.`)
-        : L(`${targetName(t)} 자동 정리를 껐어요.`, `Auto-tidy off for ${targetName(t)}.`),
-    );
+    return toast(L(`${targetName(t)} 자동 정리를 껐어요.`, `Auto-tidy off for ${targetName(t)}.`));
+  }
+  if (el.id === 'auto-trash' && state.autoConfirm) {
+    state.autoConfirm.autoTrash = el.checked;
+    return renderSettings();
   }
   if (el.id === 'auto-delay') {
     state.config.settings.autoDelaySec = Number(el.value);
     return saveConfig();
   }
-  if (['set-notify', 'set-login', 'set-smash', 'set-open'].includes(el.id)) {
-    state.config.settings[{ 'set-notify': 'notify', 'set-login': 'openAtLogin', 'set-smash': 'smash', 'set-open': 'openAfter' }[el.id]] = el.checked;
+  const toggles = { 'set-notify': 'notify', 'set-login': 'openAtLogin', 'set-smash': 'smash', 'set-open': 'openAfter', 'set-sound': 'sound', 'set-nag': 'nag', 'set-weekly': 'weekly' };
+  if (toggles[el.id]) {
+    state.config.settings[toggles[el.id]] = el.checked;
+    // 소리를 켜면 어떤 소리인지 한 번 들려준다
+    if (el.id === 'set-sound' && el.checked) SmashSound.play('slap');
     return saveConfig();
   }
   if (el.id === 'set-lang') {
@@ -1435,12 +1754,30 @@ tidy.onUpdate((u) => {
   state.update = u;
   renderUpdate();
 });
+// 트레이나 다른 프로그램(Claude 의 MCP 서버)이 설정을 바꿨다. 편집 중인 규칙은 건드리지 않는다.
 tidy.onConfigChanged(async () => {
-  const { config } = await tidy.getConfig();
-  state.config = config;
+  const { config, rev } = await tidy.getConfig();
+  if (rev === state.rev) return;
+  adoptConfig(config, rev);
+  if (!config.targets.some((t) => t.id === state.targetId)) state.targetId = config.targets[0]?.id || null;
   renderTargets();
   if ($('#tab-settings').classList.contains('active')) renderSettings();
+  if (!state.draft && !state.proposal) renderRules();
+  if (!state.busy && !state.aiItems.length) await doScan();
 });
+tidy.onHit(onHit);
+tidy.onProgress(onProgress);
+// 트레이에서 자동 정리를 켜려 했다: 설정 탭에서 먼저 확인받는다
+tidy.onAutoConfirm((id) => {
+  switchTab('settings');
+  askAuto(id);
+});
+// 잔소리 배너를 눌렀다: 그 폴더의 미리보기로
+tidy.onTarget((id) => {
+  if (state.config.targets.some((t) => t.id === id)) selectTarget(id);
+});
+// 브라우저는 사용자 동작 뒤에만 소리를 허용한다. 첫 클릭 때 깨워 둔다.
+document.addEventListener('pointerdown', () => SmashSound.warm(), { once: true });
 
 // index.html에 적힌 고정 문구(한국어)를 화면 언어에 맞춘다.
 function translateStatic() {
@@ -1459,15 +1796,15 @@ function translateStatic() {
   set('.tab[data-tab="preview"]', 'Preview');
   set('.tab[data-tab="rules"]', 'Rules');
   set('.tab[data-tab="history"]', 'History');
-  set('.tab[data-tab="settings"]', 'Auto-tidy · Claude');
+  set('.tab[data-tab="settings"]', 'Settings');
   set('#remove-target', 'Remove this folder from the list');
-  set('#tab-history .hint', 'Moved files can be undone. Files sent to the Trash have to be taken out of the Trash yourself.');
   set('#undo', 'Undo last run');
 }
 
 (async function init() {
-  const { config, configPath, home, sep, categories, platform, lang } = await tidy.getConfig();
-  Object.assign(state, { config, configPath, home, sep, categories, platform });
+  const { config, configPath, home, sep, categories, platform, lang, rev, canRestoreTrash } = await tidy.getConfig();
+  Object.assign(state, { configPath, home, sep, categories, platform, canRestoreTrash: canRestoreTrash !== false });
+  adoptConfig(config, rev);
   LANG = lang;
   translateStatic();
   tidy.updateStatus().then((u) => {

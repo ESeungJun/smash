@@ -14,7 +14,7 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "web": "node scripts/build-web.js",
-    "test": "node scripts/build-web.js && cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1",
+    "test": "node --test test/*.test.js && node scripts/build-web.js && cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=1",
     "tauri": "tauri",
     "icons": "npx -y electron@45 scripts/render-icons.js"
   },

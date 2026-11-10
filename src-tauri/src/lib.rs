@@ -3,7 +3,9 @@
 
 pub mod claude;
 pub mod config;
+pub mod fsops;
 pub mod grouping;
+pub mod history;
 pub mod lang;
 pub mod mcp;
 pub mod organizer;
@@ -34,14 +36,14 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use claude::Launch;
 use config::{contract_home, expand_home, load_config, save_config, save_config_value, Config};
 use lang::{get_lang, l, resolve_lang, set_lang};
-use organizer::{apply_plan, find_target, missing_dirs, scan_target, Applied, Item, Op};
+use organizer::{apply_all, apply_into, find_target, missing_dirs, scan_target_with, Applied, Item, Op, Recorder};
 use watcher::AutoTidy;
 
 const APP_NAME: &str = "Smash!";
-/// smash.css 의 타임라인과 맞춘다: 전체 2초, 내리치는 순간 0.8초
-const SMASH_MS: u64 = 2000;
-const SMASH_HIT_MS: u64 = 800;
-const NAG_MS: u64 = 4500;
+/// 배너는 화면 쪽(nag.js)이 스스로 닫는다. 닫지 못했을 때를 위한 상한
+const NAG_MAX_MS: u64 = 60_000;
+/// 이 수 이상 쌓이면 잔소리 단계가 오른다
+const NAG_STEPS: [usize; 3] = [20, 60, 150];
 const UPDATE_FIRST_CHECK: Duration = Duration::from_secs(15);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
@@ -50,8 +52,20 @@ const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 struct Auto(Mutex<Option<AutoTidy>>);
 /// 정리 버튼과 트레이의 정리가 겹치면 앞의 효과를 끊지 않고 차례로 돌린다
 struct SmashQueue(tokio::sync::Mutex<()>);
-/// 잔소리 배너를 누르면 열 폴더
-struct NagFolder(Mutex<Option<String>>);
+/// 잔소리 배너를 누르면 할 일
+#[derive(Clone)]
+enum NagAction {
+    /// 정리한 폴더를 연다
+    Folder(String),
+    /// 앱 창에서 그 폴더의 미리보기를 보여 준다
+    Preview(String),
+    /// 기록 탭을 연다
+    History,
+}
+struct NagFolder(Mutex<Option<NagAction>>);
+/// 앱이 마지막으로 쓴(또는 읽은) 설정 파일의 상태. 다른 프로그램이 바꿨는지 가릴 때 쓴다.
+#[derive(Default)]
+struct ConfigRev(Mutex<String>);
 struct Quitting(AtomicBool);
 #[derive(Default)]
 struct PendingUpdate(Mutex<Option<(Update, Vec<u8>)>>);
@@ -101,6 +115,8 @@ fn platform() -> &'static str {
 
 /// 화면에 보여 줄 짧은 경로와 새로 만들 폴더를 붙인다
 fn decorate(items: &[Item]) -> Value {
+    // 같은 폴더로 가는 파일이 많다. 폴더가 있는지는 폴더마다 한 번만 본다.
+    let mut seen: std::collections::HashMap<PathBuf, Vec<String>> = std::collections::HashMap::new();
     json!(items
         .iter()
         .map(|it| {
@@ -109,7 +125,10 @@ fn decorate(items: &[Item]) -> Value {
             v["destLabel"] = json!(label(&it.dest));
             v["duplicateLabel"] = json!(label(it.duplicate_of.as_deref().unwrap_or("")));
             let dirs: Vec<String> = if it.action == "move" && !it.dest.is_empty() {
-                missing_dirs(Path::new(&it.dest)).iter().map(|d| d.to_string_lossy().into_owned()).collect()
+                let dest = Path::new(&it.dest);
+                seen.entry(dest.parent().map(Path::to_path_buf).unwrap_or_default())
+                    .or_insert_with(|| missing_dirs(dest).iter().map(|d| d.to_string_lossy().into_owned()).collect())
+                    .clone()
             } else {
                 vec![]
             };
@@ -287,9 +306,30 @@ fn overlay<'a>(app: &'a AppHandle, label: &str, url: String, on_load: impl Fn() 
 // ── 등짝 스매시 효과 ──────────────────────────────────
 // 화면 맨 위에 투명 창을 띄워 손바닥이 크게 나타났다가 "찰싹!!" 내리치게 하고, 앱 창도 같이 들썩인다.
 
+/// 파일 수에 따른 세기. smash.css 의 타임라인과 맞춘다.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Blow {
+    /// smash.html 에 넘기는 이름: tap(톡) · slap(찰싹!!) · wham(철썩!!!)
+    level: &'static str,
+    /// 내리치는 순간(ms)과 효과 전체 길이(ms)
+    hit_ms: u64,
+    total_ms: u64,
+    /// 앱 창 흔들림 배율 (0 이면 안 흔든다)
+    shake: f64,
+}
+
+/// 1~5개는 손가락으로 톡, 6~50개는 찰싹, 그보다 많으면 철썩. 수를 모르면(전부 정리) 찰싹.
+fn blow_for(count: Option<usize>) -> Blow {
+    match count {
+        Some(n) if n <= 5 => Blow { level: "tap", hit_ms: 300, total_ms: 1000, shake: 0.0 },
+        Some(n) if n > 50 => Blow { level: "wham", hit_ms: 800, total_ms: 2000, shake: 1.5 },
+        _ => Blow { level: "slap", hit_ms: 800, total_ms: 2000, shake: 1.0 },
+    }
+}
+
 /// 효과를 띄우고 손바닥이 내리치는 순간까지 기다린다. 돌려준 receiver 는 효과 창이 닫히면 끝난다.
 /// 효과를 껐거나 창이 안 떠도 정해진 시간 안에 반드시 끝난다.
-async fn smash_effect(app: &AppHandle) -> Option<tokio::sync::oneshot::Receiver<()>> {
+async fn smash_effect(app: &AppHandle, blow: Blow) -> Option<tokio::sync::oneshot::Receiver<()>> {
     if !cfg_or_default().settings.smash {
         return None;
     }
@@ -298,7 +338,7 @@ async fn smash_effect(app: &AppHandle) -> Option<tokio::sync::oneshot::Receiver<
     }
     let (loaded_tx, loaded_rx) = tokio::sync::oneshot::channel::<()>();
     let loaded_tx = Mutex::new(Some(loaded_tx));
-    let built = overlay(app, "smash", format!("renderer/smash.html?lang={}", get_lang()), move || {
+    let built = overlay(app, "smash", format!("renderer/smash.html?lang={}&level={}", get_lang(), blow.level), move || {
         if let Some(tx) = loaded_tx.lock().unwrap().take() {
             let _ = tx.send(());
         }
@@ -342,18 +382,20 @@ async fn smash_effect(app: &AppHandle) -> Option<tokio::sync::oneshot::Receiver<
     if shown {
         let _ = w.show();
         join_all_spaces(&w);
-        tokio::time::sleep(Duration::from_millis(SMASH_HIT_MS)).await;
-        shake_main(app);
+        tokio::time::sleep(Duration::from_millis(blow.hit_ms)).await;
+        if blow.shake > 0.0 {
+            shake_main(app, blow.shake);
+        }
         let w3 = w.clone();
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(SMASH_MS - SMASH_HIT_MS + 100)).await;
+            tokio::time::sleep(Duration::from_millis(blow.total_ms - blow.hit_ms + 100)).await;
             let _ = w3.destroy();
         });
     }
     Some(closed_rx)
 }
 
-fn shake_main(app: &AppHandle) {
+fn shake_main(app: &AppHandle, strength: f64) {
     let Some(win) = app.get_webview_window("main") else { return };
     if !win.is_visible().unwrap_or(false) || win.is_fullscreen().unwrap_or(false) || win.is_maximized().unwrap_or(false) {
         return;
@@ -362,7 +404,7 @@ fn shake_main(app: &AppHandle) {
     let start = pos.to_logical::<f64>(scale);
     tauri::async_runtime::spawn(async move {
         for (dx, dy) in [(-16.0, 10.0), (14.0, -9.0), (-10.0, -7.0), (8.0, 6.0), (-4.0, 2.0), (0.0, 0.0)] {
-            let _ = win.set_position(LogicalPosition::new(start.x + dx, start.y + dy));
+            let _ = win.set_position(LogicalPosition::new(start.x + dx * strength, start.y + dy * strength));
             tokio::time::sleep(Duration::from_millis(45)).await;
         }
     });
@@ -405,20 +447,30 @@ fn tidied_folder(cfg: &Config, ops: &[Op]) -> Option<PathBuf> {
     Some(common)
 }
 
-/// 효과를 띄우고, 손바닥이 내리치는 순간 정리한 뒤, 효과 창이 닫힌 다음에 폴더를 연다
-async fn smash_and_apply<F>(app: &AppHandle, plan: F) -> Result<Applied, String>
+/// 효과를 띄우고, 손바닥이 내리치는 순간 정리한 뒤, 효과 창이 닫힌 다음에 폴더를 연다.
+/// `count` 는 치울 파일 수(세기를 정한다). 모르면 None.
+async fn smash_and_apply<F>(app: &AppHandle, count: Option<usize>, plan: F) -> Result<Applied, String>
 where
     F: FnOnce(&Config) -> Applied + Send + 'static,
 {
     let queue = app.state::<SmashQueue>();
     let _turn = queue.0.lock().await;
-    let closed = smash_effect(app).await;
+    let blow = blow_for(count);
+    let closed = smash_effect(app, blow).await;
+    // 내리치는 순간: 화면은 여기서 소리를 내고 맞은 행을 뺀다 (효과를 꺼도 소리는 따로 켜고 끌 수 있다)
+    let _ = app.emit_to("main", "smash:hit", json!({ "level": blow.level }));
     let (cfg, res) = blocking(move || {
         let cfg = load_config()?;
         let res = plan(&cfg);
         Ok((cfg, res))
     })
     .await?;
+    // 헛스윙: 하나도 못 치웠으면 효과 창의 글자를 바꾼다
+    if !res.results.iter().any(|r| r.ok) {
+        if let Some(w) = app.get_webview_window("smash") {
+            let _ = w.eval("window.smashMiss && window.smashMiss()");
+        }
+    }
     let dir = if cfg.settings.open_after { res.run.as_ref().and_then(|r| tidied_folder(&cfg, &r.ops)) } else { None };
     if let Some(rx) = closed {
         let _ = tokio::time::timeout(Duration::from_millis(3500), rx).await;
@@ -429,26 +481,9 @@ where
     Ok(res)
 }
 
+/// 트레이의 "지금 전부 정리하기": 폴더가 여러 개여도 기록은 실행 하나로 남는다(한 번에 되돌릴 수 있게).
 async fn tidy_all_now(app: AppHandle) {
-    let res = smash_and_apply(&app, |cfg| {
-        let mut results = Vec::new();
-        let mut ops = Vec::new();
-        for t in &cfg.targets {
-            match scan_target(cfg, Some(&t.id)) {
-                Ok(scan) => {
-                    let applied = apply_plan(cfg, scan.items, "app");
-                    if let Some(run) = applied.run {
-                        ops.extend(run.ops);
-                    }
-                    results.extend(applied.results);
-                }
-                Err(e) => eprintln!("{}: {e}", t.path),
-            }
-        }
-        let run = if ops.is_empty() { None } else { Some(organizer::Run { ops, ..Default::default() }) };
-        Applied { results, run }
-    })
-    .await;
+    let res = smash_and_apply(&app, None, |cfg| apply_all(cfg, "app")).await;
     let total = res.map(|r| r.results.iter().filter(|x| x.ok).count()).unwrap_or(0);
     let _ = app.emit_to("main", "auto:ran", json!({ "count": total }));
     let title = if total > 0 {
@@ -459,15 +494,15 @@ async fn tidy_all_now(app: AppHandle) {
     let _ = app.notification().builder().title(title).show();
 }
 
-// ── 자동 정리 잔소리 배너 ─────────────────────────────
+// ── 잔소리 배너 ───────────────────────────────────────
 // 시스템 알림은 권한에 따라 안 뜰 때가 있어서, 화면 위쪽 가운데에 투명 창으로 직접 띄운다.
-// 누르면 정리한 폴더를 연다. 4.5초 뒤 저절로 사라진다.
+// 누르면 정리한 폴더(또는 미리보기·기록)를 연다. 4.5초 뒤 저절로 사라지고, 마우스를 올리면 멈춘다.
 
-fn show_nag(app: &AppHandle, sub: String, folder: Option<String>) {
+fn show_nag(app: &AppHandle, title: String, sub: String, action: Option<NagAction>) {
     if let Some(old) = app.get_webview_window("nag") {
         let _ = old.destroy();
     }
-    *app.state::<NagFolder>().0.lock().unwrap() = folder;
+    *app.state::<NagFolder>().0.lock().unwrap() = action;
     let monitor = app
         .cursor_position()
         .ok()
@@ -475,7 +510,7 @@ fn show_nag(app: &AppHandle, sub: String, folder: Option<String>) {
         .or_else(|| app.primary_monitor().ok().flatten());
     // 카드(436×70)에 그림자가 잘리지 않을 만큼 여백을 둔 투명 창
     let (width, height) = (500.0, 130.0);
-    let url = format!("renderer/nag.html?sub={}&lang={}", enc(&sub), get_lang());
+    let url = format!("renderer/nag.html?title={}&sub={}&lang={}", enc(&title), enc(&sub), get_lang());
     let handle = app.clone();
     let mut builder = overlay(app, "nag", url, move || {
         if let Some(w) = handle.get_webview_window("nag") {
@@ -494,11 +529,20 @@ fn show_nag(app: &AppHandle, sub: String, folder: Option<String>) {
     match builder.build() {
         Ok(w) => {
             tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(NAG_MS + 100)).await;
+                tokio::time::sleep(Duration::from_millis(NAG_MAX_MS)).await;
                 let _ = w.destroy();
             });
         }
         Err(e) => eprintln!("잔소리 배너를 띄우지 못했습니다: {e}"),
+    }
+}
+
+/// 자동 정리 뒤 배너 제목. 치운 양에 따라 말이 달라진다.
+fn auto_title(count: usize) -> String {
+    match count {
+        0..=4 => l("엄마가 또 치웠다", "Mom tidied up again"),
+        5..=19 => l("으이구!! 폴더 청소 좀 하랬지!!", "Ugh!! Didn’t I tell you to clean your folders!!"),
+        _ => l("이게 다 뭐니", "What is all this?"),
     }
 }
 
@@ -519,7 +563,157 @@ fn on_auto_run(app: &AppHandle, target_id: &str, result: &Applied) {
     let sub = l(&format!("{where_}에서 {n}개 치웠어요 · {names}{more}"), &format!("Tidied {n} in {where_} · {names}{more}"));
     let handle = app.clone();
     let folder = folder.to_string_lossy().into_owned();
-    let _ = app.run_on_main_thread(move || show_nag(&handle, sub, Some(folder)));
+    let _ = app.run_on_main_thread(move || show_nag(&handle, auto_title(n), sub, Some(NagAction::Folder(folder))));
+}
+
+// ── 치우기 전 잔소리, 주간 성적표 ─────────────────────
+// 자동 정리를 켜지 않은 폴더에 규칙에 걸리는 파일이 쌓이면 단계별로 한 번씩 잔소리한다.
+// 폴더마다 하루 한 번까지만 뜨고, 설정에서 끌 수 있다.
+
+fn nag_level(count: usize) -> u8 {
+    NAG_STEPS.iter().filter(|s| count >= **s).count() as u8
+}
+
+fn nag_title(level: u8) -> String {
+    match level {
+        1 => l("방 좀 치워라!", "Clean your room!"),
+        2 => l("으이구, 발 디딜 틈이 없네", "Ugh, there’s nowhere left to step"),
+        _ => l("셋 센다. 하나…", "I’m counting to three. One…"),
+    }
+}
+
+/// 지난번(단계, 날짜)과 견줘 지금 잔소리할지: 단계가 올랐고 오늘 아직 안 했을 때만.
+fn should_nag(prev: Option<(u8, &str)>, level: u8, today: &str) -> bool {
+    level > 0 && prev.is_none_or(|(was, day)| level > was && day != today)
+}
+
+fn state_path() -> PathBuf {
+    config::config_dir().join("state.json")
+}
+
+fn load_state() -> Value {
+    std::fs::read_to_string(state_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).filter(Value::is_object).unwrap_or_else(|| json!({}))
+}
+
+fn fmt_bytes(n: u64) -> String {
+    let n = n as f64;
+    if n >= 1.0e9 {
+        format!("{:.1}GB", n / 1.0e9)
+    } else if n >= 1.0e6 {
+        format!("{:.0}MB", n / 1.0e6)
+    } else {
+        format!("{:.0}KB", (n / 1.0e3).max(1.0))
+    }
+}
+
+fn folder_name(t: &config::Target) -> String {
+    Path::new(&expand_home(&t.path)).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// 10분마다 한 번(자동 정리 스레드에서) 불린다.
+fn on_sweep(app: &AppHandle) {
+    let cfg = cfg_or_default();
+    if !cfg.settings.notify {
+        return;
+    }
+    let mut state = load_state();
+    // 모양이 깨진 파일이어도 멈추지 않게 한다
+    if !state["nag"].is_object() {
+        state["nag"] = json!({});
+    }
+    let before = state.clone();
+    let now = chrono::Local::now();
+    let today = now.format("%Y-%m-%d").to_string();
+    let mut banner: Option<(String, String, NagAction)> = None;
+
+    if cfg.settings.nag {
+        for t in cfg.targets.iter().filter(|t| !t.auto) {
+            let count = organizer::count_matching(&cfg, t);
+            let level = nag_level(count);
+            let prev = state["nag"][&t.id].clone();
+            let was = prev["level"].as_u64().map(|v| (v as u8, prev["day"].as_str().unwrap_or("")));
+            if should_nag(was, level, &today) && banner.is_none() {
+                let name = folder_name(t);
+                let sub = l(&format!("{name}에 치울 파일이 {count}개 쌓였어요. 누르면 미리 볼 수 있어요."), &format!("{count} files to tidy in {name}. Click to preview."));
+                banner = Some((nag_title(level), sub, NagAction::Preview(t.id.clone())));
+                state["nag"][&t.id] = json!({ "level": level, "day": today });
+            } else if was.is_some_and(|(w, _)| level < w) {
+                // 치워서 줄었으면 단계를 내린다. 다시 쌓이면 다시 말한다.
+                state["nag"][&t.id] = json!({ "level": level, "day": prev["day"] });
+            }
+        }
+    }
+
+    // 일요일 저녁에 한 번: 이번 주에 치운 양
+    use chrono::{Datelike, Timelike};
+    let week = now.format("%G-W%V").to_string();
+    if cfg.settings.weekly && banner.is_none() && now.weekday() == chrono::Weekday::Sun && now.hour() >= 18 && state["week"].as_str() != Some(&week) {
+        state["week"] = json!(week);
+        let stats = history::week_stats(config::now_ms());
+        let (moved, trashed, bytes) = (stats["moved"].as_u64().unwrap_or(0), stats["trashed"].as_u64().unwrap_or(0), stats["trashBytes"].as_u64().unwrap_or(0));
+        if moved + trashed > 0 {
+            let total = moved + trashed;
+            let left: Vec<String> =
+                cfg.targets.iter().map(|t| (folder_name(t), organizer::count_matching(&cfg, t))).filter(|(_, n)| *n > 0).map(|(name, n)| l(&format!("{name}에 아직 {n}개"), &format!("{n} left in {name}"))).take(2).collect();
+            let mut parts = vec![];
+            if trashed > 0 {
+                parts.push(l(&format!("휴지통 {}", fmt_bytes(bytes)), &format!("{} to Trash", fmt_bytes(bytes))));
+            }
+            parts.extend(left);
+            let title = l(&format!("이번 주 {total}개 치웠어요"), &format!("{total} files tidied this week"));
+            banner = Some((title, parts.join(" · "), NagAction::History));
+        }
+    }
+
+    if state != before {
+        let _ = config::write_json_atomic(&state_path(), &state);
+    }
+    if let Some((title, sub, action)) = banner {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || show_nag(&handle, title, sub, Some(action)));
+    }
+}
+
+/// 설정 파일을 지켜본다. MCP 서버(다른 프로세스)가 규칙을 넣으면 화면과 자동 정리에 바로 반영한다.
+fn spawn_config_watch(app: AppHandle) {
+    use notify::Watcher;
+    thread::spawn(move || {
+        let dir = config::config_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let made = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if res.is_ok_and(|e| e.paths.iter().any(|p| p.file_name().is_some_and(|n| n == "config.json"))) {
+                let _ = tx.send(());
+            }
+        });
+        let Ok(mut watcher) = made else { return };
+        if watcher.watch(&dir, notify::RecursiveMode::NonRecursive).is_err() {
+            return;
+        }
+        while rx.recv().is_ok() {
+            // 저장은 임시 파일 → 이름 바꾸기라 이벤트가 몇 개 이어진다. 잠깐 모아서 한 번만 본다.
+            thread::sleep(Duration::from_millis(300));
+            while rx.try_recv().is_ok() {}
+            let rev = config::config_rev();
+            let known = app.state::<ConfigRev>();
+            let mut last = known.0.lock().unwrap();
+            if rev.is_empty() || *last == rev {
+                continue; // 앱이 스스로 저장한 것
+            }
+            *last = rev;
+            drop(last);
+            if let Ok(cfg) = load_config() {
+                apply_settings(&app, &cfg);
+                let _ = app.emit_to("main", "config:changed", ());
+            }
+        }
+    });
+}
+
+fn remember_rev(app: &AppHandle) -> String {
+    let rev = config::config_rev();
+    *app.state::<ConfigRev>().0.lock().unwrap() = rev.clone();
+    rev
 }
 
 // ── 트레이 ────────────────────────────────────────────
@@ -609,11 +803,18 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 other => {
                     if let Some(tid) = other.strip_prefix("auto:") {
                         let mut cfg = cfg_or_default();
-                        if let Some(t) = cfg.targets.iter_mut().find(|t| t.id == tid) {
-                            t.auto = !t.auto;
+                        let Some(t) = cfg.targets.iter_mut().find(|t| t.id == tid) else { return };
+                        if !t.auto {
+                            // 켤 때는 바로 실행하지 않고, 지금 쌓인 파일을 어떻게 치울지 화면에서 먼저 보여 준다
+                            update_tray(app); // 메뉴의 체크 표시를 원래대로
+                            show_window(app, Some("settings"));
+                            let _ = app.emit_to("main", "auto:confirm", tid);
+                            return;
                         }
+                        t.auto = false;
                         match save_config(&cfg) {
                             Ok(saved) => {
+                                remember_rev(app);
                                 apply_settings(app, &saved);
                                 let _ = app.emit_to("main", "config:changed", ());
                             }
@@ -786,20 +987,24 @@ fn config_get() -> Result<Value, String> {
         "categories": config::local_categories(),
         "lang": get_lang(),
         "platform": platform(),
+        "rev": config::config_rev(),
+        "canRestoreTrash": trash::can_restore(),
     }))
 }
 
 #[tauri::command]
 fn config_save(app: AppHandle, cfg: Value) -> Result<Value, String> {
     let saved = save_config_value(&cfg)?;
+    let rev = remember_rev(&app);
     apply_settings(&app, &saved);
-    to_value(saved)
+    Ok(json!({ "config": saved, "rev": rev }))
 }
 
+/// `shallow`: 하위 폴더까지 정리가 켜져 있어도 바로 아래 파일만 본다(자동 정리가 보는 범위).
 #[tauri::command]
-async fn scan(target_id: Option<String>) -> Result<Value, String> {
+async fn scan(target_id: Option<String>, shallow: Option<bool>) -> Result<Value, String> {
     blocking(move || {
-        let res = scan_target(&load_config()?, target_id.as_deref())?;
+        let res = scan_target_with(&load_config()?, target_id.as_deref(), !shallow.unwrap_or(false))?;
         let unmatched: Vec<Value> = res
             .unmatched
             .iter()
@@ -815,6 +1020,8 @@ async fn scan(target_id: Option<String>) -> Result<Value, String> {
             "rootLabel": label(&res.root),
             "items": decorate(&res.items),
             "unmatched": unmatched,
+            "blocked": decorate(&res.blocked),
+            "truncated": res.truncated,
         }))
     })
     .await
@@ -862,12 +1069,39 @@ async fn ai_group_media(items: Vec<Item>) -> Result<Value, String> {
 
 #[tauri::command]
 async fn apply(app: AppHandle, items: Vec<Item>) -> Result<Value, String> {
-    to_value(smash_and_apply(&app, move |cfg| apply_plan(cfg, items, "app")).await?)
+    let count = items.len();
+    let progress = app.clone();
+    let res = smash_and_apply(&app, Some(count), move |cfg| {
+        let mut rec = Recorder::begin("app");
+        // 오래 걸리는 정리는 몇 개째인지 화면에 알려 준다 (너무 잦지 않게)
+        let mut last = std::time::Instant::now();
+        rec.progress = Some(Box::new(move |done, total| {
+            if done == total || last.elapsed() >= Duration::from_millis(120) {
+                last = std::time::Instant::now();
+                let _ = progress.emit_to("main", "apply:progress", json!({ "done": done, "total": total }));
+            }
+        }));
+        let results = apply_into(cfg, items, &mut rec);
+        let (run, history_error) = rec.finish();
+        Applied { results, run, history_error }
+    })
+    .await?;
+    to_value(res)
+}
+
+/// `run_id` 가 없으면 아직 돌릴 것이 남은 가장 최근 실행을 되돌린다.
+#[tauri::command]
+async fn undo(run_id: Option<String>) -> Result<Value, String> {
+    blocking(move || Ok(organizer::undo_run(run_id.as_deref()))).await
 }
 
 #[tauri::command]
-async fn undo() -> Result<Value, String> {
-    blocking(|| Ok(organizer::undo_last())).await
+fn open_trash(app: AppHandle) -> Result<(), String> {
+    if cfg!(target_os = "windows") {
+        return std::process::Command::new("explorer.exe").arg("shell:RecycleBinFolder").spawn().map(|_| ()).map_err(|e| e.to_string());
+    }
+    let dir = if cfg!(target_os = "macos") { config::home().join(".Trash") } else { config::home().join(".local/share/Trash/files") };
+    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -878,6 +1112,8 @@ async fn history() -> Result<Value, String> {
             .rev()
             .map(|r| {
                 let mut v = json!(r);
+                v["left"] = json!(r.retryable());
+                v["failed"] = json!(r.failed.iter().map(|f| json!({ "file": label(&f.file), "reason": f.reason })).collect::<Vec<_>>());
                 v["ops"] = json!(r
                     .ops
                     .iter()
@@ -891,7 +1127,7 @@ async fn history() -> Result<Value, String> {
                 v
             })
             .collect();
-        Ok(json!(runs))
+        Ok(json!({ "runs": runs, "week": history::week_stats(config::now_ms()) }))
     })
     .await
 }
@@ -913,7 +1149,7 @@ async fn ai_suggest(target_id: String, unmatched: Vec<UnmatchedIn>) -> Result<Va
         let cfg = load_config()?;
         let root = target_root_of(&cfg, &target_id)?;
         let files: Vec<organizer::FileInfo> =
-            unmatched.into_iter().map(|u| organizer::FileInfo { name: u.name, path: u.path, size: u.size, mtime_ms: u.mtime_ms }).collect();
+            unmatched.into_iter().map(|u| organizer::FileInfo { name: u.name, path: u.path, size: u.size, mtime_ms: u.mtime_ms, received_ms: None }).collect();
         let mut res = claude::suggest_placements(&cfg, &root, &files)?;
         let items: Vec<Item> = serde_json::from_value(res["items"].take()).map_err(|e| e.to_string())?;
         res["items"] = decorate(&items);
@@ -984,13 +1220,27 @@ fn update_install(app: AppHandle) {
     install_update(&app);
 }
 
-/// 잔소리 배너를 눌렀을 때 정리한 폴더를 연다
+/// 잔소리 배너를 눌렀을 때: 정리한 폴더를 열거나, 앱 창에서 미리보기·기록을 보여 준다
 #[tauri::command]
 fn nag_open(app: AppHandle) {
-    let folder = app.state::<NagFolder>().0.lock().unwrap().take();
-    if let Some(f) = folder {
-        let _ = app.opener().open_path(f, None::<&str>);
+    let action = app.state::<NagFolder>().0.lock().unwrap().take();
+    match action {
+        Some(NagAction::Folder(f)) => {
+            let _ = app.opener().open_path(f, None::<&str>);
+        }
+        Some(NagAction::Preview(target_id)) => {
+            show_window(&app, Some("preview"));
+            let _ = app.emit_to("main", "ui:target", target_id);
+        }
+        Some(NagAction::History) => show_window(&app, Some("history")),
+        None => {}
     }
+    nag_close(app);
+}
+
+/// 배너가 다 보여 주고 스스로 닫을 때
+#[tauri::command]
+fn nag_close(app: AppHandle) {
     if let Some(w) = app.get_webview_window("nag") {
         let _ = w.destroy();
     }
@@ -1010,6 +1260,7 @@ pub fn run() {
         .manage(Auto(Mutex::new(None)))
         .manage(SmashQueue(tokio::sync::Mutex::new(())))
         .manage(NagFolder(Mutex::new(None)))
+        .manage(ConfigRev::default())
         .manage(Quitting(AtomicBool::new(false)))
         .manage(PendingUpdate::default())
         .manage(UpdateStatus::default())
@@ -1032,6 +1283,8 @@ pub fn run() {
             shell_show,
             shell_open_url,
             nag_open,
+            nag_close,
+            open_trash,
             update_status,
             update_check,
             update_install,
@@ -1049,9 +1302,12 @@ pub fn run() {
                 set_dock(&handle, false);
             }
             let runner = handle.clone();
-            let auto = AutoTidy::start(Box::new(move |id, res| on_auto_run(&runner, id, res)));
+            let sweeper = handle.clone();
+            let auto = AutoTidy::start(Box::new(move |id, res| on_auto_run(&runner, id, res)), Box::new(move || on_sweep(&sweeper)));
             *handle.state::<Auto>().0.lock().unwrap() = Some(auto);
             apply_settings(&handle, &cfg);
+            remember_rev(&handle);
+            spawn_config_watch(handle.clone());
             spawn_update_checker(handle.clone());
             spawn_registration_fix();
             Ok(())
@@ -1081,12 +1337,40 @@ mod tests {
         let mut cfg = config::default_config();
         cfg.targets.truncate(1);
         cfg.targets[0].path = "/t/docs".into();
-        let op = |to: &str| Op { kind: "move".into(), from: "/x".into(), to: Some(to.into()) };
+        let op = |to: &str| Op { kind: "move".into(), from: "/x".into(), to: Some(to.into()), ..Default::default() };
         let ops = vec![op("/t/docs/사진/a.png"), op("/t/docs/자료/b.pdf")];
         assert_eq!(tidied_folder(&cfg, &ops), Some(PathBuf::from("/t/docs")));
         let ops = vec![op("/t/docs/shots/a.png"), op("/t/docs/shots/b.png")];
         assert_eq!(tidied_folder(&cfg, &ops), Some(PathBuf::from("/t/docs/shots")));
         assert_eq!(tidied_folder(&cfg, &[]), None);
+    }
+
+    #[test]
+    fn blow_scales_with_file_count() {
+        assert_eq!(blow_for(Some(1)).level, "tap");
+        assert_eq!(blow_for(Some(5)).level, "tap");
+        assert_eq!(blow_for(Some(6)).level, "slap");
+        assert_eq!(blow_for(Some(50)).level, "slap");
+        assert_eq!(blow_for(Some(51)).level, "wham");
+        assert_eq!(blow_for(None).level, "slap");
+        assert_eq!(blow_for(Some(2)).shake, 0.0, "몇 개 안 되면 창을 흔들지 않는다");
+        assert!(blow_for(Some(500)).shake > blow_for(Some(20)).shake);
+        for n in [Some(1), Some(20), Some(500), None] {
+            let b = blow_for(n);
+            assert!(b.hit_ms < b.total_ms && b.total_ms <= 2000);
+        }
+    }
+
+    #[test]
+    fn nag_steps_and_once_a_day() {
+        assert_eq!([0, 19, 20, 59, 60, 149, 150, 9999].map(nag_level), [0, 0, 1, 1, 2, 2, 3, 3]);
+        assert!(!should_nag(None, 0, "2026-11-10"), "쌓인 게 없으면 말하지 않는다");
+        assert!(should_nag(None, 1, "2026-11-10"));
+        assert!(!should_nag(Some((1, "2026-11-09")), 1, "2026-11-10"), "같은 단계로는 다시 말하지 않는다");
+        assert!(should_nag(Some((1, "2026-11-09")), 2, "2026-11-10"));
+        assert!(!should_nag(Some((1, "2026-11-10")), 2, "2026-11-10"), "하루에 한 번까지");
+        assert_eq!(fmt_bytes(1_200_000_000), "1.2GB");
+        assert_eq!(fmt_bytes(3_400_000), "3MB");
     }
 
     #[test]

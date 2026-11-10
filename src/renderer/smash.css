@@ -1,5 +1,6 @@
 /*
- * 등짝 스매시 효과. 전체 2초, 내리치는 순간은 0.8초(40%). main.js의 SMASH_MS·SMASH_HIT_MS와 맞춘다.
+ * 등짝 스매시 효과. 전체 2초, 내리치는 순간은 0.8초(40%). src-tauri/src/lib.rs 의 blow_for 와 맞춘다.
+ * 세기는 파일 수에 따라 셋: 톡(lv-tap, 1초·0.3초에 닿음·흔들림 없음) · 찰싹(기본) · 철썩(lv-wham, 더 크게 흔들림).
  *   0~0.28초  손바닥이 크게 나타난다
  *   0.28~0.7초 뒤로 젖히며 힘을 모은다
  *   0.7~0.8초 내리친다 → 0.8초 "찰싹!!" + 번쩍임 + 화면 들썩임
@@ -83,9 +84,49 @@ html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
   100% { transform: translate(0, 0); }
 }
 
-/* 움직임 줄이기를 켠 사용자에게는 "찰싹!!" 글자만 잠깐 보여 준다. */
+/* ── 톡: 몇 개 안 될 때. 작은 손이 한 번 가볍게 닿는다. 번쩍임·고리·흔들림 없음 ── */
+.lv-tap .stage { animation: none; }
+.lv-tap .flash, .lv-tap .ring { display: none; }
+.lv-tap .hand { width: min(26vmin, 300px); animation: tap 1s both; }
+.lv-tap .kwang { font-size: min(9vmin, 110px); translate: 20vmin -12vmin; animation: tapword 1s both; }
+.lv-tap .kwang.en { font-size: min(7vmin, 84px); }
+@keyframes tap {
+  0% { opacity: 0; transform: translateY(8vh) rotate(-8deg) scale(0.7); }
+  18% { opacity: 1; transform: translateY(-3vh) rotate(-14deg) scale(1); animation-timing-function: cubic-bezier(0.7, 0, 1, 0.6); }
+  30% { transform: translateY(1vh) rotate(-2deg) scale(1.08); }
+  36% { transform: translateY(1vh) rotate(-2deg) scale(1.12, 1.04); }
+  60% { opacity: 1; transform: translateY(0) rotate(-4deg) scale(1.04); }
+  100% { opacity: 0; transform: translateY(-10vh) rotate(-10deg) scale(1); }
+}
+@keyframes tapword {
+  0%, 29% { opacity: 0; transform: scale(0.5) rotate(-6deg); }
+  36% { opacity: 1; transform: scale(1.15) rotate(-4deg); }
+  44%, 78% { opacity: 1; transform: scale(1) rotate(-4deg); }
+  100% { opacity: 0; transform: scale(1.04) rotate(-4deg); }
+}
+
+/* ── 철썩: 아주 많을 때. 손이 더 크고 화면이 1.5배로 흔들린다 ── */
+.lv-wham .stage { animation-name: shake-big; animation-duration: 0.55s; }
+.lv-wham .hand { width: min(84vmin, 980px); }
+.lv-wham .kwang { font-size: min(21vmin, 250px); translate: 44vmin -30vmin; }
+.lv-wham .kwang.en { font-size: min(13vmin, 160px); }
+.lv-wham .ring { border-width: 3.2vmin; }
+@keyframes shake-big {
+  0% { transform: translate(0, 0); }
+  10% { transform: translate(-3.6vmin, 2.7vmin); }
+  22% { transform: translate(3.3vmin, -2.4vmin); }
+  36% { transform: translate(-2.4vmin, -1.8vmin); }
+  50% { transform: translate(1.8vmin, 1.5vmin); }
+  66% { transform: translate(-0.9vmin, 0.6vmin); }
+  82% { transform: translate(0.5vmin, -0.3vmin); }
+  100% { transform: translate(0, 0); }
+}
+
+/* 움직임 줄이기를 켠 사용자에게는 글자만 잠깐 보여 준다(세기와 상관없이 손·번쩍임·흔들림 없음). */
 @media (prefers-reduced-motion: reduce) {
-  .stage { animation: none; }
-  .hand, .flash, .ring,   .kwang { translate: 0 0; animation: fade 2s both; }
+  .stage, .lv-wham .stage { animation: none; }
+  .hand, .flash, .ring, .lv-tap .hand, .lv-wham .hand { display: none; }
+  .kwang, .lv-tap .kwang, .lv-wham .kwang { translate: 0 0; animation: fade 2s both; }
+  .lv-tap .kwang { animation-duration: 1s; }
   @keyframes fade { 0%, 35% { opacity: 0; } 45%, 80% { opacity: 1; } 100% { opacity: 0; } }
 }
