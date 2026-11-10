@@ -188,8 +188,12 @@ pub fn new_id(prefix: &str) -> String {
 pub struct Match {
     pub extensions: Vec<String>,
     pub name_includes: Vec<String>,
+    /// 받은 지 N일(받은 시각과 수정 시각 중 늦은 쪽부터 센다)
     #[serde(serialize_with = "ser_num")]
     pub older_than_days: f64,
+    /// 받은 곳(내려받은 주소)에 이 낱말이 들어 있으면
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub from_includes: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -210,6 +214,7 @@ pub struct Rule {
 pub const GROUP_MODES: [&str; 3] = ["", "auto", "month"];
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct Target {
     pub id: String,
     pub path: String,
@@ -221,6 +226,13 @@ pub struct Target {
     /// 기준 폴더(다른 정리 대상) id. 있으면 이 폴더 규칙 다음에 기준 폴더 규칙을 같이 쓴다.
     #[serde(default)]
     pub link: String,
+    /// 자동 정리에서 휴지통 규칙도 실행할지 (끄면 옮기기 규칙만 자동으로 돈다)
+    #[serde(default = "yes")]
+    pub auto_trash: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -247,6 +259,18 @@ pub struct Settings {
     pub smash: bool,
     pub open_after: bool,
     pub language: String,
+    /// 정리할 때 타격음
+    #[serde(default = "yes")]
+    pub sound: bool,
+    /// 자동 정리를 켜지 않은 폴더에 파일이 쌓이면 잔소리 배너
+    #[serde(default = "yes")]
+    pub nag: bool,
+    /// 일요일 저녁 주간 성적표 배너
+    #[serde(default = "yes")]
+    pub weekly: bool,
+    /// 첫 실행 안내를 봤는지
+    #[serde(default)]
+    pub intro_seen: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -263,7 +287,7 @@ fn rule(name: String, extensions: Vec<String>, dest: String, action: &str, older
         id: new_id("r"),
         name,
         enabled: true,
-        matcher: Match { extensions, name_includes: vec![], older_than_days: older },
+        matcher: Match { extensions, name_includes: vec![], older_than_days: older, from_includes: vec![] },
         action: action.into(),
         dest: if action == "trash" { String::new() } else { dest },
         group: if action == "trash" { String::new() } else { "auto".into() },
@@ -301,6 +325,7 @@ pub fn default_config() -> Config {
         rules,
         recursive: false,
         link: link.into(),
+        auto_trash: true,
     };
     Config {
         version: json!(3),
@@ -310,7 +335,18 @@ pub fn default_config() -> Config {
             patterns: exts(&[".localized", "desktop.ini", "Thumbs.db", "*.crdownload", "*.download", "*.part", "*.tmp", ".정리기록*"]),
         },
         ai: Ai { model: "sonnet".into(), vision: false },
-        settings: Settings { auto_delay_sec: 10.0, notify: true, open_at_login: false, smash: true, open_after: true, language: "system".into() },
+        settings: Settings {
+            auto_delay_sec: 10.0,
+            notify: true,
+            open_at_login: false,
+            smash: true,
+            open_after: true,
+            language: "system".into(),
+            sound: true,
+            nag: true,
+            weekly: true,
+            intro_seen: false,
+        },
     }
 }
 
@@ -364,6 +400,7 @@ pub fn normalize_match(m: Option<&Value>) -> Match {
         extensions: ext,
         name_includes: str_list(m.and_then(|m| m.get("nameIncludes"))),
         older_than_days: js_number(m.and_then(|m| m.get("olderThanDays"))).max(0.0),
+        from_includes: str_list(m.and_then(|m| m.get("fromIncludes"))).into_iter().map(|w| w.trim().to_string()).filter(|w| !w.is_empty()).collect(),
     }
 }
 
@@ -398,6 +435,10 @@ pub fn normalize(cfg: &Value) -> Config {
         smash: bool_not_false(st.and_then(|s| s.get("smash"))),
         open_after: bool_not_false(st.and_then(|s| s.get("openAfter"))),
         language: if ["system", "ko", "en"].contains(&language) { language.into() } else { "system".into() },
+        sound: bool_not_false(st.and_then(|s| s.get("sound"))),
+        nag: bool_not_false(st.and_then(|s| s.get("nag"))),
+        weekly: bool_not_false(st.and_then(|s| s.get("weekly"))),
+        intro_seen: get_bool(st, "introSeen", false),
     };
 
     let targets = match cfg.get("targets") {
@@ -413,6 +454,7 @@ pub fn normalize(cfg: &Value) -> Config {
                 },
                 recursive: t.get("recursive") == Some(&Value::Bool(true)),
                 link: js_string(t.get("link")),
+                auto_trash: bool_not_false(t.get("autoTrash")),
             })
             .collect::<Vec<Target>>(),
         _ => base.targets.clone(),
@@ -450,14 +492,36 @@ pub fn write_json_atomic(file: &Path, data: &impl Serialize) -> std::io::Result<
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    // 임시 이름은 프로세스·호출마다 다르게 한다(같은 프로세스의 두 스레드가 같은 임시 파일을 쓰지 않게)
     let tmp = file.with_file_name(format!(
-        "{}.{}.tmp",
+        "{}.{}.{}.tmp",
         file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-        std::process::id()
+        std::process::id(),
+        new_id("w")
     ));
     let text = serde_json::to_string_pretty(data).map_err(std::io::Error::other)?;
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, file)
+    let written = (|| {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, file)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// 설정 파일이 바뀌었는지 가리는 값(수정 시각 + 크기). 화면이 저장 직전에 디스크와 비교한다.
+pub fn config_rev() -> String {
+    match std::fs::metadata(config_path()) {
+        Ok(m) => {
+            let ms = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis()).unwrap_or(0);
+            format!("{ms}-{}", m.len())
+        }
+        Err(_) => String::new(),
+    }
 }
 
 pub fn load_config() -> Result<Config, String> {
@@ -518,6 +582,12 @@ mod tests {
         assert_eq!(r.matcher.extensions, vec!["pdf"]);
         assert_eq!(r.dest, "");
         assert!(r.id.starts_with("r_"));
+        assert!(cfg.targets[0].auto_trash && cfg.settings.sound && cfg.settings.nag && !cfg.settings.intro_seen, "새 설정의 기본값");
+        let again = normalize(&json!({ "targets": [{ "path": "~/x", "autoTrash": false, "rules": [{ "match": { "fromIncludes": [" github.com ", ""] }, "action": "move", "dest": "y" }] }], "settings": { "sound": false } }));
+        assert!(!again.targets[0].auto_trash && !again.settings.sound);
+        assert_eq!(again.targets[0].rules[0].matcher.from_includes, vec!["github.com"]);
+        let round = normalize(&serde_json::to_value(&again).unwrap());
+        assert!(!round.targets[0].auto_trash, "저장한 모양 그대로 다시 읽힌다");
         assert_eq!(r.group, "", "휴지통 규칙은 소분류 없음");
         let text = serde_json::to_string(&cfg.settings).unwrap();
         assert!(text.contains("\"autoDelaySec\":3"), "{text}");
