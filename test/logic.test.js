@@ -51,11 +51,6 @@ test('규칙 목적지가 정리할 폴더 안인지', () => {
   assert.equal(L.resolvePath('~/Downloads', 'a/../b/./c', '/Users/me', '/'), '/Users/me/Downloads/b/c');
 });
 
-test('타격 세기는 파일 수를 따른다 (Rust 의 blow_for 와 같은 경계)', () => {
-  assert.deepEqual([1, 5, 6, 50, 51, 2000].map(L.blowLevel), ['tap', 'tap', 'slap', 'slap', 'wham', 'wham']);
-  assert.equal(L.blowLevel(null), 'slap');
-});
-
 test('타격음: 셀수록 크고 낮고 길다. 알림음보다 크지 않다', () => {
   const [tap, slap, wham] = ['tap', 'slap', 'wham'].map(L.slapSpec);
   assert.ok(tap.gain < slap.gain && slap.gain < wham.gain);

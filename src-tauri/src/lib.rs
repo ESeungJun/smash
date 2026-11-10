@@ -458,7 +458,7 @@ where
     let blow = blow_for(count);
     let closed = smash_effect(app, blow).await;
     // 내리치는 순간: 화면은 여기서 소리를 내고 맞은 행을 뺀다 (효과를 꺼도 소리는 따로 켜고 끌 수 있다)
-    let _ = app.emit_to("main", "smash:hit", json!({ "level": blow.level, "visual": closed.is_some() }));
+    let _ = app.emit_to("main", "smash:hit", json!({ "level": blow.level }));
     let (cfg, res) = blocking(move || {
         let cfg = load_config()?;
         let res = plan(&cfg);
@@ -617,6 +617,10 @@ fn on_sweep(app: &AppHandle) {
         return;
     }
     let mut state = load_state();
+    // 모양이 깨진 파일이어도 멈추지 않게 한다
+    if !state["nag"].is_object() {
+        state["nag"] = json!({});
+    }
     let before = state.clone();
     let now = chrono::Local::now();
     let today = now.format("%Y-%m-%d").to_string();

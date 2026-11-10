@@ -71,14 +71,6 @@
     });
   }
 
-  /** 파일 수에 따른 타격 세기 (src-tauri/src/lib.rs 의 blow_for 와 같은 경계) */
-  function blowLevel(count) {
-    if (count == null) return 'slap';
-    if (count <= 5) return 'tap';
-    if (count > 50) return 'wham';
-    return 'slap';
-  }
-
   /**
    * 타격음 합성 값. 자산 파일 없이 Web Audio 로 만든다:
    * 짧은 소음(손바닥이 닿는 "찰")을 대역 필터로 걸러 빠르게 줄이고, 낮은 사인파 한 번("싹"의 몸통)을 겹친다.
@@ -123,5 +115,5 @@
     return `${Math.max(1, Math.round(n / 1e3))}KB`;
   }
 
-  return { mergeConfig, resolvePath, destInsideTargets, blowLevel, slapSpec, staggerDelays, runStatus, failures, fmtBytes };
+  return { mergeConfig, resolvePath, destInsideTargets, slapSpec, staggerDelays, runStatus, failures, fmtBytes };
 });

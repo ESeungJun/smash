@@ -46,7 +46,7 @@ fn tools() -> Value {
         },
         {
             "name": "add_rule",
-            "description": "정리 규칙을 추가한다. 확장자·이름 포함 문자열·받은 지 N일·받은 곳 중 하나 이상의 조건이 필요하다. 앞에 있는 규칙이 먼저 적용된다. move 규칙의 dest는 정리 대상 폴더 안이어야 실행된다.",
+            "description": "정리 규칙을 추가한다. 확장자·이름 포함 문자열·받은 지 N일·받은 곳 중 하나 이상의 조건이 필요하다. 앞에 있는 규칙이 먼저 적용된다. move 규칙의 dest는 정리 대상 폴더 안이어야 실행된다. 자동 정리가 켜진 폴더에는 꺼진 상태로 들어가며, 사용자가 앱에서 켜야 적용된다.",
             "inputSchema": { "type": "object", "properties": {
                 "target": { "type": "string", "description": "폴더 id 또는 경로" },
                 "name": { "type": "string" },
@@ -238,10 +238,12 @@ impl Server {
                     return Err(l("조건이 하나 이상 필요합니다", "At least one condition is needed"));
                 }
                 let name = args.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                // 자동 정리가 켜진 폴더는 미리보기 없이 실행된다. Claude 가 넣은 규칙은 꺼 둔 채로 넣고 사용자가 앱에서 켜게 한다.
+                let auto_on = find_target(&cfg, Some(&target)).is_some_and(|t| t.auto);
                 let rule = Rule {
                     id: new_id("r"),
                     name: name.clone(),
-                    enabled: true,
+                    enabled: !auto_on,
                     matcher,
                     action: action.into(),
                     dest: if action == "trash" { String::new() } else { dest },
@@ -256,7 +258,13 @@ impl Server {
                 let last = args.get("position").and_then(Value::as_str) == Some("last");
                 let path = crate::organizer::add_rule(&mut cfg, &target, rule, last)?;
                 save_config(&cfg)?;
-                let mut out = json!({ "added": name, "target": path });
+                let mut out = json!({ "added": name, "target": path, "enabled": !auto_on });
+                if auto_on {
+                    out["note"] = json!(l(
+                        "이 폴더는 자동 정리가 켜져 있어 규칙을 꺼진 상태로 넣었습니다. 사용자가 앱의 규칙 탭에서 켜야 적용됩니다.",
+                        "Auto-tidy is on for this folder, so the rule was added switched off. The user has to turn it on in the app's Rules tab.",
+                    ));
+                }
                 if outside {
                     out["warning"] = json!(l(
                         "목적지가 정리 대상 폴더 밖이라 이 규칙은 실행되지 않습니다. 그 폴더를 앱에서 정리할 폴더로 추가하세요.",
@@ -417,6 +425,15 @@ mod tests {
         assert_eq!(undone["restored"], json!(1));
         assert!(inbox.join("memo.pdf").exists());
         // 밖을 가리키는 규칙은 경고와 함께 저장된다
+        // 자동 정리가 켜진 폴더에 Claude 가 넣은 규칙은 꺼진 채로 들어간다(사용자가 앱에서 켜야 실행된다)
+        let mut auto_cfg = load_config().unwrap();
+        auto_cfg.targets[0].auto = true;
+        save_config(&auto_cfg).unwrap();
+        let held = call(&mut s, 13, "add_rule", json!({ "target": "inbox", "name": "전부 버리기", "action": "trash", "extensions": ["pdf"] }));
+        assert_eq!(held["enabled"], json!(false), "{held}");
+        assert!(!load_config().unwrap().targets[0].rules.iter().find(|r| r.name == "전부 버리기").unwrap().enabled);
+        auto_cfg.targets[0].auto = false;
+        save_config(&auto_cfg).unwrap();
         let warned = call(&mut s, 12, "add_rule", json!({ "target": "inbox", "name": "밖", "action": "move", "extensions": ["zip"], "dest": sb.join("elsewhere") }));
         assert!(warned["warning"].is_string(), "{warned}");
     }

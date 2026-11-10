@@ -316,6 +316,12 @@ fn same_content(a: &Path, b: &Path) -> bool {
     sa.len() == sb.len() && matches!((hash_file(a), hash_file(b)), (Ok(x), Ok(y)) if x == y)
 }
 
+/// 두 경로가 같은 파일(또는 폴더)을 가리키는지. 대소문자를 가리지 않는 디스크나 한글 자모 풀림(NFD) 때문에
+/// 글자는 달라도 같은 곳일 수 있다.
+fn same_place(a: &Path, b: &Path) -> bool {
+    matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+}
+
 fn split_name(name: &str) -> (String, String) {
     let p = Path::new(name);
     match p.extension() {
@@ -351,7 +357,7 @@ fn plan_move(src: &Path, dest_dir: &Path, reserved: &mut HashSet<PathBuf>) -> Op
     let name = src.file_name()?.to_string_lossy().into_owned();
     let dest_dir = clean(dest_dir);
     let dest = dest_dir.join(&name);
-    if src.parent().map(clean) == Some(dest_dir.clone()) {
+    if src.parent().map(clean) == Some(dest_dir.clone()) || src.parent().is_some_and(|p| same_place(p, &dest_dir)) {
         return None;
     }
     let s = |p: &Path| p.to_string_lossy().into_owned();
@@ -361,6 +367,10 @@ fn plan_move(src: &Path, dest_dir: &Path, reserved: &mut HashSet<PathBuf>) -> Op
         return Some(Plan { action: "move", dest: s(&renamed), note: Some("renamed"), duplicate_of: None });
     }
     if fs::symlink_metadata(&dest).is_ok() {
+        // 목적지가 바로 이 파일이면 중복이 아니라 이미 제자리다
+        if same_place(src, &dest) {
+            return None;
+        }
         if dest.is_file() && same_content(src, &dest) {
             return Some(Plan { action: "trash", dest: String::new(), note: Some("duplicate"), duplicate_of: Some(s(&dest)) });
         }
@@ -589,6 +599,8 @@ pub fn scan_target_with(cfg: &Config, reference: Option<&str>, subfolders: bool)
     let mut reserved = HashSet::new();
     let mut items = Vec::new();
     let mut blocked = Vec::new();
+    // 목적 폴더의 실제 위치(글자는 달라도 같은 폴더인 경우를 가리려고). 폴더마다 한 번만 구한다.
+    let mut real_dirs: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
     for (i, file) in files.iter().enumerate() {
         let Some((rule, dir, also)) = &hit[i] else { continue };
         let src = Path::new(&file.path);
@@ -597,7 +609,11 @@ pub fn scan_target_with(cfg: &Config, reference: Option<&str>, subfolders: bool)
         } else {
             // 이미 대분류 폴더의 하위 폴더 어딘가에 있으면 그대로 둔다: 사용자가 나눠 둔 것을 풀지 않고,
             // 시간·이름 묶음이 다시 계산돼도 정리할 때마다 자리가 바뀌지 않게
-            if src.parent().map(|p| is_inside(&clean(p), dir)).unwrap_or(false) {
+            let real_dir = real_dirs.entry(dir.clone()).or_insert_with(|| fs::canonicalize(dir).ok());
+            let already = src.parent().is_some_and(|p| {
+                is_inside(&clean(p), dir) || real_dir.as_ref().is_some_and(|d| fs::canonicalize(p).is_ok_and(|rp| rp.starts_with(d)))
+            });
+            if already && rule.action == "move" {
                 continue;
             }
             let dest_dir = match &sub[i] {
@@ -804,7 +820,7 @@ pub fn apply_into(cfg: &Config, items: Vec<Item>, rec: &mut Recorder) -> Vec<App
             if item.action == "trash" {
                 if let Some(orig) = item.duplicate_of.clone().filter(|s| !s.is_empty()) {
                     let original = abs(&orig);
-                    let still = original.is_file() && same_content(&src, &original);
+                    let still = original.is_file() && !same_place(&src, &original) && same_content(&src, &original);
                     if !still {
                         item.action = "move".into();
                         item.dest = original.to_string_lossy().into_owned();
@@ -1422,6 +1438,73 @@ mod tests {
         assert!(!res.results[0].ok, "{:?}", res.results);
         assert!(inbox.join("c.txt").exists() && count_outside() == 1, "링크로 바뀐 폴더로는 옮기지 않는다");
         assert!(res.results[0].message.contains("밖"), "{}", res.results[0].message);
+    }
+
+    /// 대소문자를 가리지 않는 디스크(맥 기본)에서 `PDF/a.pdf` 와 `pdf/a.pdf` 는 같은 파일이다.
+    /// 글자만 비교하면 자기 자신을 "같은 내용의 중복"으로 보고 하나뿐인 파일을 휴지통에 보낸다.
+    #[test]
+    fn a_file_is_never_its_own_duplicate() {
+        let _g = guard();
+        let sb = sandbox();
+        let inbox = sb.join("self-dup");
+        let _ = fs::remove_dir_all(&inbox);
+        let _ = fs::remove_dir_all(sb.join("config"));
+        write(&inbox.join("PDF").join("only.pdf"), "the only copy", 0);
+        write(&inbox.join("PDF").join("sub").join("deep.pdf"), "deep", 0);
+        if !inbox.join("pdf").join("only.pdf").exists() {
+            return; // 대소문자를 가리는 파일 시스템에서는 해당 없음
+        }
+        let cfg = save_config_value(&json!({ "targets": [{ "id": "inbox", "path": inbox, "recursive": true, "rules": [
+            { "name": "문서", "match": { "extensions": ["pdf"] }, "action": "move", "dest": "pdf" }
+        ]}]}))
+        .unwrap();
+        let scan = scan_target(&cfg, Some("inbox")).unwrap();
+        assert!(scan.items.is_empty(), "이미 그 폴더(와 그 하위)에 있는 파일이다: {:?}", scan.items.iter().map(|i| (&i.name, &i.action, &i.note)).collect::<Vec<_>>());
+        // 계획을 꾸며 넣어도 자기 자신을 버리지 않는다
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        let forged = Item { id: "x".into(), src: s(inbox.join("PDF").join("only.pdf")), action: "trash".into(), duplicate_of: Some(s(inbox.join("pdf").join("only.pdf"))), ..Default::default() };
+        let res = apply_plan(&cfg, vec![forged], "test");
+        assert!(!res.results[0].ok, "{:?}", res.results);
+        assert_eq!(fs::read_to_string(inbox.join("PDF").join("only.pdf")).unwrap(), "the only copy");
+    }
+
+    /// 기록 파일은 다른 프로그램이 고칠 수 있다. 되돌리기도 정리 대상 밖으로는 옮기지 않는다.
+    #[test]
+    fn undo_does_not_trust_history_paths() {
+        let _g = guard();
+        let (_cfg, inbox) = simple("forged-history", &["keep.pdf"]);
+        let outside = sandbox().join("forged-outside");
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        write(&inbox.join("문서").join("secret.pdf"), "secret", 0);
+        write(&outside.join("payload.sh"), "evil", 0);
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        let dir = crate::history::history_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let forge = |id: &str, from: PathBuf, to: PathBuf| {
+            let lines = [
+                json!({ "t": "begin", "id": id, "at": "2026-11-10T00:00:00.000Z", "source": "app" }),
+                json!({ "t": "op", "i": 0, "type": "move", "from": s(from), "to": s(to) }),
+                json!({ "t": "mkdir", "path": s(outside.clone()) }),
+                json!({ "t": "end", "at": "2026-11-10T00:00:01.000Z" }),
+            ];
+            fs::write(dir.join(format!("{id}.jsonl")), lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+        };
+        // 안의 파일을 밖으로 빼내려는 기록
+        forge("run_out", outside.join("secret.pdf"), inbox.join("문서").join("secret.pdf"));
+        let res = undo_run(Some("run_out"));
+        assert_eq!(res["restored"], json!(0), "{res}");
+        assert!(inbox.join("문서").join("secret.pdf").exists() && !outside.join("secret.pdf").exists());
+        assert!(res["failed"][0]["reason"].as_str().unwrap().contains("밖"), "{res}");
+        // 밖의 파일을 안으로 들이려는 기록
+        forge("run_in", inbox.join("payload.sh"), outside.join("payload.sh"));
+        let res = undo_run(Some("run_in"));
+        assert_eq!(res["restored"], json!(0), "{res}");
+        assert!(outside.join("payload.sh").exists() && !inbox.join("payload.sh").exists());
+        assert!(outside.exists(), "기록에 적힌 밖의 폴더는 지우지 않는다");
+        // 파일 이름과 안의 id 가 다른 기록은 읽지 않는다
+        fs::rename(dir.join("run_in.jsonl"), dir.join("run_other.jsonl")).unwrap();
+        assert!(load_history().iter().all(|r| r.id != "run_in"));
     }
 
     #[cfg(target_os = "macos")]

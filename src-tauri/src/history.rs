@@ -148,16 +148,17 @@ fn take_lock(id: &str) -> Option<File> {
 
 fn release_lock(id: &str, lock: Option<File>) {
     if let Some(f) = lock {
-        let _ = f.unlock();
-        drop(f);
+        // 쥔 채로 지운 뒤 놓는다(놓고 지우면 그 사이 다른 쪽이 잠근 파일을 지우게 된다)
         let _ = fs::remove_file(lock_path(id));
+        drop(f);
     }
 }
 
 /// 다른 프로세스·스레드가 이 실행을 쥐고 있는지
 fn is_locked(id: &str) -> bool {
     match OpenOptions::new().write(true).open(lock_path(id)) {
-        Ok(f) => match f.try_lock() {
+        // 읽는 쪽은 공유 잠금으로만 확인한다(읽는 동안 다른 쪽에 "실행 중"으로 보이지 않게)
+        Ok(f) => match f.try_lock_shared() {
             Ok(()) => {
                 let _ = f.unlock();
                 false
@@ -315,7 +316,8 @@ fn read_run(path: &Path) -> Option<Run> {
             Line::End { .. } => ended = true,
         }
     }
-    if !valid_id(&run.id) {
+    // 파일 이름과 안에 적힌 id 가 같아야 한다(다른 실행인 척하는 파일은 읽지 않는다)
+    if !valid_id(&run.id) || path.file_stem().is_none_or(|s| s.to_string_lossy() != run.id) {
         return None;
     }
     run.ops = ops.into_values().collect();
@@ -431,6 +433,15 @@ pub fn undo_run(id: Option<&str>) -> Value {
     };
 
     let exists = |p: &str| fs::symlink_metadata(p).is_ok();
+    // 기록 파일은 다른 프로그램이 고칠 수 있다. 되돌릴 때도 지금 설정의 정리 대상 안에서만, 일반 파일만 옮긴다.
+    let cfg = crate::config::load_config().ok();
+    let inside = |p: &str| {
+        let p = Path::new(p);
+        cfg.as_ref().is_some_and(|c| crate::organizer::inside_any_root(c, p) && p.parent().is_some_and(|d| crate::organizer::really_inside_any_root(c, d)))
+    };
+    let is_file = |p: &str| fs::symlink_metadata(p).is_ok_and(|m| m.is_file());
+    let outside = || l("정리 대상 폴더 밖이라 되돌리지 않았습니다", "Outside the folders you set up, so it was not undone");
+    let not_file = || l("파일이 아닙니다", "Not a file");
     let (mut restored, mut from_trash, mut left) = (0, 0, 0);
     let mut failed = Vec::new();
     let mut trashed = Vec::new();
@@ -438,7 +449,11 @@ pub fn undo_run(id: Option<&str>) -> Value {
         let to = op.to.clone().unwrap_or_default();
         // Ok(true) 돌려놨다 · Ok(false) 이미 원래 자리에 있다 · Err 못 돌렸다
         let res: Result<bool, String> = if op.kind == "move" {
-            if exists(&to) {
+            if exists(&to) && !(inside(&to) && inside(&op.from)) {
+                Err(outside())
+            } else if exists(&to) && !is_file(&to) {
+                Err(not_file())
+            } else if exists(&to) {
                 crate::fsops::move_file(Path::new(&to), Path::new(&op.from)).map(|_| true).map_err(|e| match e.kind() {
                     std::io::ErrorKind::AlreadyExists => l("원래 자리에 같은 이름 파일이 있습니다", "A file with the same name is in the original place"),
                     _ => e.to_string(),
@@ -448,12 +463,19 @@ pub fn undo_run(id: Option<&str>) -> Value {
             } else {
                 Err(l("옮긴 파일이 없습니다", "The moved file is gone"))
             }
+        } else if exists(&op.from) && !to.is_empty() && exists(&to) {
+            // 휴지통에 그대로 있는데 원래 자리에 같은 이름의 다른 파일이 생겼다
+            Err(l("원래 자리에 같은 이름 파일이 있습니다", "A file with the same name is in the original place"))
         } else if exists(&op.from) {
             // 휴지통으로 가지 않았거나 사용자가 이미 꺼냈다
             Ok(false)
         } else if to.is_empty() {
             trashed.push(contract_home(&op.from));
             continue;
+        } else if !inside(&op.from) {
+            Err(outside())
+        } else if exists(&to) && !is_file(&to) {
+            Err(not_file())
         } else {
             crate::trash::restore_from_trash(Path::new(&to), Path::new(&op.from)).map(|_| {
                 from_trash += 1;
@@ -481,7 +503,7 @@ pub fn undo_run(id: Option<&str>) -> Value {
     // 이 실행이 만든 폴더 중 비어 있는 것은 지운다(깊은 쪽부터). 비어 있지 않으면 그대로 남는다.
     let mut dirs = run.dirs.clone();
     dirs.sort_by_key(|d| std::cmp::Reverse(d.len()));
-    let removed_dirs = dirs.iter().filter(|d| fs::remove_dir(d).is_ok()).count();
+    let removed_dirs = dirs.iter().filter(|d| cfg.as_ref().is_some_and(|c| crate::organizer::within_roots(c, Path::new(d))) && fs::remove_dir(d).is_ok()).count();
     release_lock(&run.id, Some(lock));
     json!({
         "ok": true,
@@ -598,6 +620,7 @@ mod tests {
         let dir = sb.join("legacy");
         let _ = fs::remove_dir_all(&dir);
         write(&dir.join("문서").join("a.pdf"), "a", 0);
+        crate::config::save_config_value(&json!({ "targets": [{ "id": "legacy", "path": dir, "rules": [] }] })).unwrap();
         let from = dir.join("a.pdf").to_string_lossy().into_owned();
         let to = dir.join("문서").join("a.pdf").to_string_lossy().into_owned();
         let legacy = json!([

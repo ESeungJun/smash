@@ -191,7 +191,8 @@ pub fn from_contains(raw: &[u8], needle: &str) -> bool {
     }
     let hay: Vec<u8> = raw.to_ascii_lowercase();
     let find = |pat: &[u8]| !pat.is_empty() && hay.windows(pat.len()).any(|w| w == pat);
-    let utf16: Vec<u8> = needle.encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+    // 건초더미를 바이트 단위로 소문자로 바꿨으니 UTF-16 패턴도 같은 변환을 거친다
+    let utf16: Vec<u8> = needle.encode_utf16().flat_map(|u| u.to_be_bytes()).collect::<Vec<u8>>().to_ascii_lowercase();
     find(needle.as_bytes()) || (!needle.is_ascii() && find(&utf16))
 }
 
@@ -283,5 +284,8 @@ mod tests {
         assert!(!from_contains(b"anything", "  "));
         let utf16: Vec<u8> = "https://예시.kr/a".encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
         assert!(from_contains(&utf16, "예시"));
+        // UTF-16 하위 바이트가 대문자 범위(0x41~0x5A)에 걸리는 글자도 맞아야 한다 ('학' U+D559)
+        let hak: Vec<u8> = "https://대학.kr".encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+        assert!(from_contains(&hak, "대학"));
     }
 }

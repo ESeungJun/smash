@@ -14,8 +14,12 @@ fn failed() -> String {
     l("휴지통으로 옮기지 못했습니다", "Could not move to Trash")
 }
 
-/// 시험·개발 실행에서 실제 휴지통 대신 쓸 폴더 (`SMASH_TRASH_DIR`)
+/// 시험·개발 실행에서 실제 휴지통 대신 쓸 폴더 (`SMASH_TRASH_DIR`).
+/// 배포판에서는 읽지 않는다(환경 변수로 "휴지통"을 아무 폴더로 바꿀 수 없게).
 fn override_dir() -> Option<PathBuf> {
+    if !cfg!(debug_assertions) && !cfg!(test) {
+        return None;
+    }
     std::env::var_os("SMASH_TRASH_DIR").filter(|d| !d.is_empty()).map(PathBuf::from)
 }
 
@@ -56,9 +60,11 @@ var p=null;if(ok){try{p=ObjC.unwrap(res.path)}catch(e){p=\"\"}}out.push(p);}retu
             .unwrap_or_default();
         for (i, file) in chunk.iter().enumerate() {
             let gone = std::fs::symlink_metadata(file).is_err();
-            out.push(match parsed.get(i).cloned().flatten() {
-                Some(p) if gone => Ok(Some(PathBuf::from(p)).filter(|p| !p.as_os_str().is_empty())),
-                _ => Err(failed()),
+            // 파일이 사라졌으면 휴지통에 간 것이다. 위치를 못 받았어도(출력이 깨짐) 실패로 치지 않는다: 기록에서 빠지면 안 된다.
+            out.push(if gone {
+                Ok(parsed.get(i).cloned().flatten().filter(|p| !p.is_empty()).map(PathBuf::from))
+            } else {
+                Err(failed())
             });
         }
     }
@@ -150,15 +156,20 @@ pub fn move_to_trash(file: &Path) -> Result<Option<PathBuf>, String> {
 
 /// 휴지통에 있는 파일을 원래 자리로 옮긴다. 원래 자리에 같은 이름이 생겼으면 덮어쓰지 않고 실패한다.
 pub fn restore_from_trash(trashed: &Path, original: &Path) -> Result<(), String> {
-    if std::fs::symlink_metadata(trashed).is_err() {
-        return Err(l("휴지통에 그 파일이 없습니다(비웠거나 옮겼습니다)", "The file is no longer in the Trash"));
+    let denied = || l("휴지통 폴더에 접근할 수 없습니다. 휴지통에서 직접 꺼내 주세요", "Can't access the Trash folder. Take it out of the Trash yourself");
+    match std::fs::symlink_metadata(trashed) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(l("휴지통에 그 파일이 없습니다(비웠거나 옮겼습니다)", "The file is no longer in the Trash")),
+        // 휴지통 폴더를 볼 권한이 없는 환경(전체 디스크 접근 권한 없음 등)
+        Err(_) => return Err(denied()),
     }
     crate::fsops::move_file(trashed, original).map_err(|e| match e.kind() {
         std::io::ErrorKind::AlreadyExists => l("원래 자리에 같은 이름 파일이 있습니다", "A file with the same name is in the original place"),
-        std::io::ErrorKind::PermissionDenied => l("휴지통 폴더에 접근할 수 없습니다. 휴지통에서 직접 꺼내 주세요", "Can't access the Trash folder. Take it out of the Trash yourself"),
+        std::io::ErrorKind::PermissionDenied => denied(),
         _ => e.to_string(),
     })?;
     // freedesktop 휴지통은 정보 파일이 짝으로 있다
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     if let (Some(dir), Some(name)) = (trashed.parent().and_then(Path::parent), trashed.file_name()) {
         let info = dir.join("info").join(format!("{}.trashinfo", name.to_string_lossy()));
         if info.is_file() {
