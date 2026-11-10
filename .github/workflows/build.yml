@@ -30,6 +30,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      # 화면의 순수 계산(설정 합치기·목적지 판정·타격 세기)
+      - run: node --test test/
       # generate_context! 가 dist-web 을 읽는다
       - run: node scripts/build-web.js
       # 설정 위치(SMASH_HOME)와 언어가 전역이라 테스트는 하나씩 돈다
