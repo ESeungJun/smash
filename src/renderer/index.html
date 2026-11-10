@@ -40,11 +40,14 @@
         <button class="tab active" data-tab="preview" role="tab">미리보기</button>
         <button class="tab" data-tab="rules" role="tab">규칙</button>
         <button class="tab" data-tab="history" role="tab">기록</button>
-        <button class="tab" data-tab="settings" role="tab">자동 정리 · Claude</button>
+        <button class="tab" data-tab="settings" role="tab">설정</button>
       </div>
 
       <section id="tab-preview" class="panel active">
+        <div id="intro"></div>
+        <div id="result"></div>
         <div id="plan"></div>
+        <div id="blocked"></div>
         <div id="unmatched"></div>
       </section>
 
@@ -58,9 +61,10 @@
 
       <section id="tab-history" class="panel">
         <div class="panel-head">
-          <p class="hint">옮긴 파일은 되돌릴 수 있어요. 휴지통으로 보낸 파일은 휴지통에서 직접 꺼내야 해요.</p>
-          <button id="undo" class="ghost small">마지막 작업 되돌리기</button>
+          <p class="hint" id="history-hint"></p>
+          <button id="undo" class="ghost small">마지막 정리 되돌리기</button>
         </div>
+        <div id="week"></div>
         <div id="history"></div>
       </section>
 
@@ -72,6 +76,8 @@
     <datalist id="folder-list"></datalist>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="tauri-bridge.js"></script>
+    <script src="logic.js"></script>
+    <script src="sound.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
