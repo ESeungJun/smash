@@ -213,7 +213,7 @@ pub fn inside_any_root(cfg: &Config, p: &Path) -> bool {
 }
 
 /// 실제 위치(심볼릭 링크를 따라간 경로)로도 정리 대상 안인지. 아직 없는 폴더는 있는 데까지만 따라간다.
-/// 정리 대상 안의 폴더 바로가기가 바깥을 가리키면 글자만 본 검사를 통과하므로, Claude 가 정한 이동에 쓴다.
+/// 정리 대상 안의 폴더 바로가기가 바깥을 가리키면 글자만 본 검사를 통과하므로 이것까지 본다.
 pub fn really_inside_any_root(cfg: &Config, p: &Path) -> bool {
     let mut probe = clean(p);
     let real = loop {
@@ -226,6 +226,12 @@ pub fn really_inside_any_root(cfg: &Config, p: &Path) -> bool {
         }
     };
     target_roots(cfg).iter().filter_map(|r| fs::canonicalize(r).ok()).any(|root| real == root || real.starts_with(&root))
+}
+
+/// 파일을 옮겨도 되는 자리인지: 글자로도, 실제 위치로도 정리 대상 안이어야 한다.
+/// 스캔·계획·실행이 모두 이 검사 하나를 쓴다(파일 이동에 닿는 경로가 같은 경계를 지키게).
+pub fn within_roots(cfg: &Config, p: &Path) -> bool {
+    inside_any_root(cfg, p) && really_inside_any_root(cfg, p)
 }
 
 pub fn find_target<'a>(cfg: &'a Config, reference: Option<&str>) -> Option<&'a Target> {
@@ -284,7 +290,7 @@ fn match_file(rule: &Rule, file: &FileInfo, now: f64) -> bool {
 
 /// 이 규칙의 목적지가 정리 대상 폴더 안인지 (밖이면 실행 단계에서 거부된다)
 pub fn rule_dest_inside(cfg: &Config, target: &Target, rule: &Rule) -> bool {
-    rule.action == "trash" || inside_any_root(cfg, &resolve_dest_dir(&target_root(target), &rule.dest))
+    rule.action == "trash" || within_roots(cfg, &resolve_dest_dir(&target_root(target), &rule.dest))
 }
 
 fn resolve_dest_dir(base: &Path, dest: &str) -> PathBuf {
@@ -599,7 +605,7 @@ pub fn scan_target_with(cfg: &Config, reference: Option<&str>, subfolders: bool)
                 None => dir.clone(),
             };
             // 실행 단계는 정리 대상 밖으로 옮기지 않는다. 여기서 미리 걸러 이유를 보여 준다.
-            if !inside_any_root(cfg, &dest_dir) {
+            if !within_roots(cfg, &dest_dir) {
                 let dest = dest_dir.join(&file.name).to_string_lossy().into_owned();
                 let mut item = make_item(file, Plan { action: "move", dest, note: Some("outside"), duplicate_of: None }, Some(rule.id.clone()), rule.name.clone());
                 item.also_matched = also.clone();
@@ -634,7 +640,7 @@ pub fn regroup(cfg: &Config, items: Vec<Item>, assign: &HashMap<String, String>)
         let mut dir = abs(&item.dest).parent().map(Path::to_path_buf).unwrap_or_default();
         if let (Some(sub), Some(base)) = (assign.get(&item.id).and_then(|s| crate::grouping::clean_folder(s)), item.group_base.as_ref()) {
             let wanted = clean(&abs(base).join(sub));
-            if inside_any_root(cfg, &wanted) {
+            if within_roots(cfg, &wanted) {
                 dir = wanted;
             }
         }
@@ -714,7 +720,7 @@ pub fn plan_from_moves(cfg: &Config, moves: Vec<MoveReq>) -> Planned {
         }
         let base = src.parent().map(Path::to_path_buf).unwrap_or_default();
         let dest_dir = resolve_dest_dir(&base, m.dest_folder.as_deref().unwrap_or(""));
-        if !inside_any_root(cfg, &dest_dir) || !really_inside_any_root(cfg, &dest_dir) {
+        if !within_roots(cfg, &dest_dir) {
             fail(l("목적지가 정리 대상 폴더 밖입니다", "The destination is outside the folders you set up"));
             continue;
         }
@@ -789,6 +795,10 @@ pub fn apply_into(cfg: &Config, items: Vec<Item>, rec: &mut Recorder) -> Vec<App
             if !st.is_file() {
                 return Err(l("파일이 아닙니다", "Not a file"));
             }
+            // 원본이 폴더 바로가기 너머(정리 대상 밖)에 있으면 건드리지 않는다
+            if !src.parent().is_some_and(|d| really_inside_any_root(cfg, d)) {
+                return Err(outside_file());
+            }
             let size = st.len();
             // 중복이라 버리기로 한 파일은 원본이 아직 그대로 있을 때만 버린다. 아니면 원본 자리로 옮긴다.
             if item.action == "trash" {
@@ -810,8 +820,9 @@ pub fn apply_into(cfg: &Config, items: Vec<Item>, rec: &mut Recorder) -> Vec<App
                 return trash(rec, l("휴지통으로 보냄", "Moved to Trash"));
             }
             let wanted = abs(&item.dest);
+            let outside_dest = || l("목적지가 정리 대상 폴더 밖입니다", "The destination is outside the folders you set up");
             if !inside_any_root(cfg, &wanted) {
-                return Err(l("목적지가 정리 대상 폴더 밖입니다", "The destination is outside the folders you set up"));
+                return Err(outside_dest());
             }
             // 계획 이후에 상황이 바뀌었을 수 있어 실행 직전에 다시 확인한다.
             let dir = wanted.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -821,6 +832,10 @@ pub fn apply_into(cfg: &Config, items: Vec<Item>, rec: &mut Recorder) -> Vec<App
                     return trash(rec, l("같은 파일이 이미 있어 휴지통으로 보냄", "Same file already there, moved to Trash"));
                 }
                 let dest = PathBuf::from(&planned.dest);
+                // 옮기기 직전마다 실제 위치를 다시 본다: 미리보기 뒤에 목적 폴더가 바깥을 가리키는 바로가기로 바뀌었을 수 있다
+                if !within_roots(cfg, &dir) {
+                    return Err(outside_dest());
+                }
                 let new_dirs = missing_dirs(&dest);
                 let i = rec.intent(Op { kind: "move".into(), from: from.clone(), to: Some(planned.dest.clone()), size, ..Default::default() })?;
                 #[cfg(test)]
@@ -1359,6 +1374,54 @@ mod tests {
             assert_eq!(planned.rejected.len(), 2, "바로가기를 거쳐 바깥으로 나가거나 바깥 파일을 들이는 이동은 거절");
             assert_eq!(planned.items.len(), 1, "아직 없는 폴더는 있는 데까지만 확인한다");
         }
+    }
+
+    /// 정리 대상 안의 폴더 바로가기(심볼릭 링크)를 거쳐 바깥으로 나가거나 바깥 파일을 들이지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_folders_never_carry_files_across_the_boundary() {
+        use std::os::unix::fs::symlink;
+        let _g = guard();
+        let (_, inbox) = simple("symlink-edge", &["a.pdf", "b.pdf", "c.txt"]);
+        let outside = sandbox().join("symlink-edge-outside");
+        let _ = fs::remove_dir_all(&outside);
+        write(&outside.join("secret.txt"), "s", 0);
+        symlink(&outside, inbox.join("밖으로")).unwrap();
+        let cfg = save_config_value(&json!({ "targets": [{ "id": "inbox", "path": inbox, "rules": [
+            { "name": "링크로", "match": { "extensions": ["pdf"] }, "action": "move", "dest": "밖으로/모음" },
+            { "name": "글", "match": { "extensions": ["txt"] }, "action": "move", "dest": "글" }
+        ]}]}))
+        .unwrap();
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        let count_outside = || fs::read_dir(&outside).unwrap().count();
+
+        // (가) 목적 폴더가 바깥을 가리키는 링크: 미리보기에서 걸러지고, 꾸며 넣어도 실행이 막는다
+        let scan = scan_target(&cfg, Some("inbox")).unwrap();
+        assert_eq!(scan.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), vec!["c.txt"]);
+        assert_eq!(scan.blocked.len(), 2, "링크 너머로 가는 규칙은 계획에 넣지 않는다");
+        assert!(!rule_dest_inside(&cfg, &cfg.targets[0], &cfg.targets[0].rules[0]));
+        let forged = Item { id: "x".into(), src: s(inbox.join("a.pdf")), action: "move".into(), dest: s(inbox.join("밖으로").join("모음").join("a.pdf")), ..Default::default() };
+        let res = apply_plan(&cfg, vec![forged], "test");
+        assert!(!res.results[0].ok, "{:?}", res.results);
+        assert!(inbox.join("a.pdf").exists() && count_outside() == 1, "바깥으로 나가지 않았다");
+        assert_eq!(res.run.unwrap().failed.len(), 1, "사유가 기록에 남는다");
+
+        // (나) 원본의 부모가 링크: 바깥 파일을 안으로 들이지 않는다 (휴지통으로도 보내지 않는다)
+        for action in ["move", "trash"] {
+            let forged = Item { id: "y".into(), src: s(inbox.join("밖으로").join("secret.txt")), action: action.into(), dest: s(inbox.join("글").join("secret.txt")), ..Default::default() };
+            let res = apply_plan(&cfg, vec![forged], "test");
+            assert!(!res.results[0].ok, "{action}: {:?}", res.results);
+            assert!(outside.join("secret.txt").exists(), "{action}: 바깥 파일은 그대로");
+        }
+
+        // (다) 미리보기 뒤, 실행 전에 목적 폴더가 링크로 바뀐 경우
+        let item = scan.items.into_iter().next().unwrap();
+        assert!(item.dest.ends_with("c.txt"));
+        symlink(&outside, inbox.join("글")).unwrap();
+        let res = apply_plan(&cfg, vec![item], "test");
+        assert!(!res.results[0].ok, "{:?}", res.results);
+        assert!(inbox.join("c.txt").exists() && count_outside() == 1, "링크로 바뀐 폴더로는 옮기지 않는다");
+        assert!(res.results[0].message.contains("밖"), "{}", res.results[0].message);
     }
 
     #[cfg(target_os = "macos")]
