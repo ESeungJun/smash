@@ -37,11 +37,11 @@ and works with the Claude you already have signed in on your computer, with no A
 ## Features
 
 - **Rules you can read** — pick file kinds (images, video, documents, archives, installers…) or type extensions,
-  add words in the name and "older than N days", then choose: move to a folder or send to the Trash.
+  add words in the name, "received over N days ago" (counted from when the file landed in the folder, or its last edit if later) and where it was downloaded from, then choose: move to a folder or send to the Trash.
   While you build a rule it shows how many files in the folder match right now.
 - **Say it instead** — write "move PDFs with '계약서' in the name to Documents/계약서" and Claude fills in the rule.
 - **Documents-first defaults** — Downloads is sorted into `Documents/Images`, `Media`, `Files` and `Dev Resources` out of the box
-  (`사진·이미지`, `미디어`, `자료` and `개발리소스` when the app runs in Korean). Installers older than 7 days go to the Trash.
+  (`사진·이미지`, `미디어`, `자료` and `개발리소스` when the app runs in Korean). Installers received more than 7 days ago go to the Trash.
 - **Auto-tidy** — turn it on for a folder and new files are sorted once they finish downloading
   (the size has to stay the same twice). It keeps watching from the menu bar (notification area on Windows) after you close the window.
   When it's done, a banner drops in at the top of the screen: "으이구!! 폴더 청소 좀 하랬지!!" (roughly "Ugh!! Didn't I tell you to clean your folders!!"). Click it to open the folder.
@@ -53,9 +53,11 @@ and works with the Claude you already have signed in on your computer, with no A
   - Nothing is deleted for good; it only goes to the system Trash.
   - Never overwrites: a file with the same name gets ` (2)`. Identical files are treated as duplicates and go to the Trash.
   - Hidden files, files still downloading and folders (git repositories included) are left alone.
-  - Files never move outside the folders you've set up.
+  - Files never move outside the folders you've set up, not even through a symlinked folder. Rules pointing outside are listed separately in the preview instead of failing later.
+  - History is written before each move, so a run that gets cut off can still be undone. If history can't be written, nothing moves.
   - Korean names match whether macOS stores them composed or decomposed (NFC/NFD), so "스크린샷" rules actually catch screenshots.
-- **History and undo** — undo the last run in one click.
+- **History and undo** — undo any run from the History tab. If some files can't go back, only those stay open for a retry.
+  On macOS, files sent to the Trash come back too as long as they are still there (on Windows, take them out of the Recycle Bin yourself).
 
 ## Claude, without an API key
 
