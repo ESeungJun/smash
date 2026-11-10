@@ -5,13 +5,13 @@
     <title>Smash!</title>
     <link rel="stylesheet" href="nag.css" />
   </head>
-  <!-- 자동 정리가 끝나면 화면 위쪽 가운데에 잠깐 내려오는 잔소리 배너.
-       누르면 nag.js 가 nag_open 명령을 불러 정리한 폴더를 연다. -->
+  <!-- 화면 위쪽 가운데에 잠깐 내려오는 잔소리 배너(자동 정리 뒤, 파일이 쌓였을 때, 주간 성적표).
+       누르면 nag.js 가 nag_open 명령을 불러 폴더·미리보기·기록을 연다. 마우스를 올리면 멈춘다. -->
   <body>
     <a class="banner" href="#open">
       <img src="../../assets/icon-256.png" alt="" width="44" height="44" />
       <span class="text">
-        <span class="title">으이구!! 폴더 청소 좀 하랬지!!</span>
+        <span class="title" id="title">으이구!! 폴더 청소 좀 하랬지!!</span>
         <span class="sub" id="sub"></span>
       </span>
     </a>

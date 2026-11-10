@@ -1,10 +1,10 @@
 [package]
 name = "smash"
-version = "2.2.0"
+version = "2.3.0"
 description = "Smash! 다운로드·문서 폴더를 규칙대로 정리하는 앱"
 authors = ["Haul"]
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.89"
 
 [lib]
 name = "smash_lib"
@@ -35,6 +35,7 @@ tokio = { version = "1", features = ["time", "sync"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = "0.3"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

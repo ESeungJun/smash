@@ -150,7 +150,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 }
 .primary { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); font-weight: 600; }
 .primary:hover:not(:disabled) { opacity: 0.88; }
-.primary.smash:not(:disabled):active { transform: translateY(1px); }
+.primary.smash:not(:disabled):active { transform: translateY(2px); }
+/* 누르는 순간 0.1초 빨갛게: 타격이 시작됐다는 표시. 빨강은 여전히 '봐야 할 곳'에만 쓴다 */
+.primary.smash.struck { background: var(--accent); border-color: var(--accent); color: #ffffff; transform: translateY(2px); }
 .ghost:hover:not(:disabled) { background: var(--hover); }
 .small { height: 28px; padding: 0 10px; font-size: 13px; }
 .danger { color: var(--negative); }
@@ -368,3 +370,44 @@ details.run summary::-webkit-details-marker { display: none; }
 .proposal-row:hover { background: var(--hover); }
 .proposal-row input { margin-top: 3px; }
 .rule-sentence.before { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+/* ── 맞은 행이 빠진다: 손바닥이 닿는 순간 위에서부터 납작해진다 ── */
+.trow.file.slapped { animation: flatten 150ms ease-in both; transform-origin: 50% 100%; overflow: hidden; }
+@keyframes flatten {
+  from { height: 34px; min-height: 34px; opacity: 1; transform: scaleY(1); }
+  to { height: 0; min-height: 0; padding-top: 0; padding-bottom: 0; opacity: 0; transform: scaleY(0.2); }
+}
+/* 되돌리기: 스매시의 반대. 손바닥이 가볍게 두 번 내려앉는다 */
+.brand img.pat { animation: pat 0.5s ease-out both; transform-origin: 50% 100%; }
+@keyframes pat {
+  0%, 100% { transform: translateY(0) rotate(0); }
+  25% { transform: translateY(3px) rotate(-6deg); }
+  50% { transform: translateY(0) rotate(0); }
+  75% { transform: translateY(2px) rotate(-4deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .trow.file.slapped, .brand img.pat { animation: none; }
+  .primary.smash.struck { transform: none; }
+}
+
+/* ── 안내·결과·막힌 항목 ── */
+.intro { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; }
+.intro-text { display: grid; gap: 2px; font-size: 13px; }
+.intro-text b { font-size: 14px; }
+.intro-text span { color: var(--muted); }
+.result-band > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; cursor: pointer; list-style: none; }
+.result-band > summary::-webkit-details-marker { display: none; }
+.result-band > summary b { color: var(--warn-ink); }
+.result-band .rows { border-top: 1px solid var(--rule); }
+.blocked-group { border-top: 1px solid var(--rule); }
+.blocked-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; font-size: 13px; }
+.plain-row .dest { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.week-line { margin: 0 0 12px; padding: 10px 16px; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); font-size: 13px; }
+.run-side { display: flex; align-items: center; gap: 8px; flex: none; }
+.run-ops .op-undone { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--control); }
+.run-ops .op-failed { color: var(--warn-ink); }
+.auto-confirm { display: grid; gap: 10px; padding: 12px 14px; margin: 4px 0 10px; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--hover); font-size: 13px; }
+.auto-confirm .rows { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-control); max-height: 220px; overflow: auto; }
+.check-line { display: flex; align-items: center; gap: 8px; }
+.check-line input { accent-color: var(--primary); }
+.dest-preview .ghost.small { margin-left: 8px; }

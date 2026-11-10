@@ -8,10 +8,10 @@ use serde_json::{json, Value};
 
 use crate::config::{contract_home, load_config, new_id, normalize_match, save_config, Config, Rule};
 use crate::lang::{l, resolve_lang, set_lang};
-use crate::organizer::{apply_plan, find_target, folder_tree, load_history, plan_from_moves, scan_target, undo_last, Item, MoveReq, Rejected};
+use crate::organizer::{apply_plan, find_target, folder_tree, load_history, plan_from_moves, scan_target, undo_run, Item, MoveReq, Rejected};
 
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const INSTRUCTIONS: &str = "Smash!: 사용자의 폴더(다운로드·문서 등)를 규칙대로 정리하는 도구. scan_folder로 계획을 만들고, 사용자에게 보여 준 뒤 apply_plan으로 실행한다. 삭제 없이 휴지통으로만 보내며 undo_last로 되돌릴 수 있다.";
+const INSTRUCTIONS: &str = "Smash!: 사용자의 폴더(다운로드·문서 등)를 규칙대로 정리하는 도구. scan_folder(규칙대로)나 plan_moves(직접 정한 이동)로 계획을 만들고, 사용자에게 보여 준 뒤 그 계획의 id로 apply_plan을 실행한다. 계획에 없는 이동은 실행되지 않는다. 삭제 없이 휴지통으로만 보내며 undo_last로 되돌릴 수 있다.";
 
 fn tools() -> Value {
     json!([
@@ -22,31 +22,38 @@ fn tools() -> Value {
         },
         {
             "name": "scan_folder",
-            "description": "정리 대상 폴더를 스캔해 규칙에 따른 정리 계획(plan)과 규칙에 안 걸린 파일(unmatched), 옮길 수 있는 폴더 목록(folders)을 돌려준다. 파일은 아직 움직이지 않는다. unmatched 파일은 이름을 보고 folders 중 알맞은 곳을 골라 apply_plan의 moves로 넘기면 된다.",
+            "description": "정리 대상 폴더를 스캔해 규칙에 따른 정리 계획(plan)과 규칙에 안 걸린 파일(unmatched), 옮길 수 있는 폴더 목록(folders)을 돌려준다. 파일은 아직 움직이지 않는다. unmatched 파일은 이름을 보고 folders 중 알맞은 곳을 골라 plan_moves로 계획에 더하면 된다. blocked는 규칙의 목적지가 정리 대상 폴더 밖이라 실행할 수 없는 항목이다.",
             "inputSchema": { "type": "object", "properties": { "target": { "type": "string", "description": "폴더 id(예: downloads) 또는 경로(예: ~/Downloads). 생략하면 첫 번째 폴더." } } }
         },
         {
-            "name": "apply_plan",
-            "description": "정리를 실제로 실행한다. 실행 전에 무엇을 어디로 옮기는지 사용자에게 보여 주고 동의를 받을 것. item_ids는 scan_folder가 준 계획 항목, moves는 직접 정한 이동이다. 삭제는 없고 휴지통으로만 보낸다. 실행 내역은 undo_last로 되돌릴 수 있다.",
+            "name": "plan_moves",
+            "description": "직접 정한 이동을 검증해 계획 항목(id 포함)으로 만든다. 파일은 아직 움직이지 않는다. 정리 대상 폴더 밖의 파일·목적지는 rejected로 돌려준다. 돌려받은 plan을 사용자에게 보여 주고 동의를 받은 뒤 그 id를 apply_plan에 넘긴다.",
             "inputSchema": { "type": "object", "properties": {
-                "item_ids": { "type": "array", "items": { "type": "string" }, "description": "scan_folder 결과 plan의 id 목록" },
                 "moves": { "type": "array", "items": { "type": "object", "properties": {
                     "src": { "type": "string", "description": "옮길 파일 경로" },
                     "dest_folder": { "type": "string", "description": "목적지 폴더 경로(절대 경로, ~ 경로, 또는 파일이 있는 폴더 기준 상대 경로)" },
                     "action": { "type": "string", "enum": ["move", "trash"] },
                     "reason": { "type": "string" }
                 }, "required": ["src"] } }
-            } }
+            }, "required": ["moves"] }
+        },
+        {
+            "name": "apply_plan",
+            "description": "정리를 실제로 실행한다. 실행 전에 무엇을 어디로 옮기는지 사용자에게 보여 주고 동의를 받을 것. scan_folder나 plan_moves가 돌려준 계획 항목의 id만 받는다(계획에 없는 이동은 실행하지 않는다). 삭제는 없고 휴지통으로만 보낸다. 실행 내역은 undo_last로 되돌릴 수 있다.",
+            "inputSchema": { "type": "object", "properties": {
+                "item_ids": { "type": "array", "items": { "type": "string" }, "description": "scan_folder·plan_moves 결과 plan의 id 목록" }
+            }, "required": ["item_ids"] }
         },
         {
             "name": "add_rule",
-            "description": "정리 규칙을 추가한다. 확장자·이름 포함 문자열·오래된 날짜 중 하나 이상의 조건이 필요하다. 앞에 있는 규칙이 먼저 적용된다.",
+            "description": "정리 규칙을 추가한다. 확장자·이름 포함 문자열·받은 지 N일·받은 곳 중 하나 이상의 조건이 필요하다. 앞에 있는 규칙이 먼저 적용된다. move 규칙의 dest는 정리 대상 폴더 안이어야 실행된다. 자동 정리가 켜진 폴더에는 꺼진 상태로 들어가며, 사용자가 앱에서 켜야 적용된다.",
             "inputSchema": { "type": "object", "properties": {
                 "target": { "type": "string", "description": "폴더 id 또는 경로" },
                 "name": { "type": "string" },
                 "extensions": { "type": "array", "items": { "type": "string" }, "description": "예: [\"pdf\",\"hwp\"]" },
                 "name_includes": { "type": "array", "items": { "type": "string" }, "description": "파일 이름에 들어 있으면 매칭(대소문자 무시)" },
-                "older_than_days": { "type": "number" },
+                "older_than_days": { "type": "number", "description": "받은 지 N일 지난 파일(폴더에 들어온 날과 마지막으로 고친 날 중 늦은 쪽부터 센다)" },
+                "from_includes": { "type": "array", "items": { "type": "string" }, "description": "내려받은 주소에 들어 있으면 매칭(예: [\"github.com\"]). macOS·Windows에서 받은 곳 기록이 있는 파일만." },
                 "action": { "type": "string", "enum": ["move", "trash"] },
                 "dest": { "type": "string", "description": "move일 때 목적지. 상대 경로면 대상 폴더 기준." },
                 "group": { "type": "string", "enum": ["", "auto", "month"], "description": "목적지 안 소분류. auto=용도(영수증·스크린샷 등)·비슷한 이름·찍은 시간으로 하위 폴더, month=연-월, 빈 문자열=없음. 기본 auto" },
@@ -55,8 +62,8 @@ fn tools() -> Value {
         },
         {
             "name": "undo_last",
-            "description": "가장 최근 정리 실행을 되돌린다(옮긴 파일을 원래 자리로). 휴지통으로 보낸 파일은 사용자가 휴지통에서 직접 복원해야 한다.",
-            "inputSchema": { "type": "object", "properties": {} }
+            "description": "정리 실행 하나를 되돌린다(옮긴 파일을 원래 자리로). run_id를 주면 그 실행을, 없으면 아직 돌릴 것이 남은 가장 최근 실행을 되돌린다. 휴지통으로 보낸 파일은 휴지통 안 위치를 아는 경우(macOS·Linux)에만 꺼내 오고, 못 꺼낸 것은 trashed 목록으로 알려 준다. 일부가 실패하면 그 파일만 남아 다시 시도할 수 있다.",
+            "inputSchema": { "type": "object", "properties": { "run_id": { "type": "string", "description": "history가 돌려준 실행 id" } } }
         },
         {
             "name": "history",
@@ -68,6 +75,7 @@ fn tools() -> Value {
 
 fn view(item: &Item) -> Value {
     let note = match item.note.as_deref() {
+        Some("outside") => Some(l("규칙의 목적지가 정리 대상 폴더 밖이라 실행할 수 없음", "The rule's destination is outside the folders you set up, so it can't run")),
         Some("duplicate") => Some(format!(
             "{}{}",
             l("같은 내용 파일이 이미 있음: ", "A file with the same content already exists: "),
@@ -91,7 +99,7 @@ fn strs(v: Option<&Value>) -> Vec<String> {
 }
 
 pub struct Server {
-    /// scan_folder 가 만든 계획을 apply_plan 에서 id 로 받을 수 있게 잠시 들고 있는다
+    /// scan_folder·plan_moves 가 만든 계획. apply_plan 은 여기 있는 id 만 실행한다.
     last_plan: HashMap<String, Item>,
 }
 
@@ -148,23 +156,13 @@ impl Server {
                         "sizeKB": (f.size / 1024.0).round() as i64,
                         "modified": chrono::DateTime::from_timestamp_millis(f.mtime_ms as i64).map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default(),
                     })).collect::<Vec<_>>(),
+                    "blocked": res.blocked.iter().map(view).collect::<Vec<_>>(),
+                    "truncated": res.truncated,
                     "folders": folder_tree(&cfg, 2).iter().map(|f| contract_home(f)).collect::<Vec<_>>(),
                 }))
             }
-            "apply_plan" => {
+            "plan_moves" => {
                 let cfg = Self::cfg()?;
-                let ids = strs(args.get("item_ids"));
-                let mut items = Vec::new();
-                let mut rejected = Vec::new();
-                for id in &ids {
-                    match self.last_plan.get(id) {
-                        Some(item) => items.push(item.clone()),
-                        None => rejected.push(Rejected {
-                            src: id.clone(),
-                            reason: l("계획에 없는 id입니다. scan_folder를 다시 실행하세요.", "Unknown id. Run scan_folder again."),
-                        }),
-                    }
-                }
                 let moves: Vec<MoveReq> = args
                     .get("moves")
                     .and_then(Value::as_array)
@@ -184,13 +182,37 @@ impl Server {
                     })
                     .unwrap_or_default();
                 let planned = plan_from_moves(&cfg, moves);
-                items.extend(planned.items);
-                rejected.extend(planned.rejected);
+                for item in &planned.items {
+                    self.last_plan.insert(item.id.clone(), item.clone());
+                }
+                Ok(json!({ "plan": planned.items.iter().map(view).collect::<Vec<_>>(), "rejected": planned.rejected }))
+            }
+            "apply_plan" => {
+                let cfg = Self::cfg()?;
+                let ids = strs(args.get("item_ids"));
+                let mut items = Vec::new();
+                let mut rejected = Vec::new();
+                for id in &ids {
+                    match self.last_plan.get(id) {
+                        Some(item) => items.push(item.clone()),
+                        None => rejected.push(Rejected {
+                            src: id.clone(),
+                            reason: l("계획에 없는 id입니다. scan_folder나 plan_moves를 다시 실행하세요.", "Unknown id. Run scan_folder or plan_moves again."),
+                        }),
+                    }
+                }
+                // 보여 준 적 없는 이동은 실행하지 않는다
+                if args.get("moves").is_some_and(|m| m.as_array().is_some_and(|a| !a.is_empty())) {
+                    return Err(l(
+                        "apply_plan은 계획 id만 받습니다. 직접 정한 이동은 plan_moves로 먼저 계획을 만들고, 사용자에게 보여 준 뒤 그 id를 넘기세요.",
+                        "apply_plan only takes plan ids. Make a plan with plan_moves first, show it to the user, then pass its ids.",
+                    ));
+                }
                 let applied = apply_plan(&cfg, items, "claude-mcp");
                 for id in &ids {
                     self.last_plan.remove(id);
                 }
-                Ok(json!({ "runId": applied.run.as_ref().map(|r| r.id.clone()), "results": applied.results, "rejected": rejected }))
+                Ok(json!({ "runId": applied.run.as_ref().map(|r| r.id.clone()), "results": applied.results, "rejected": rejected, "historyError": applied.history_error }))
             }
             "add_rule" => {
                 let mut cfg = Self::cfg()?;
@@ -210,15 +232,18 @@ impl Server {
                     "extensions": args.get("extensions").cloned().unwrap_or(json!([])),
                     "nameIncludes": args.get("name_includes").cloned().unwrap_or(json!([])),
                     "olderThanDays": args.get("older_than_days").cloned().unwrap_or(json!(0)),
+                    "fromIncludes": args.get("from_includes").cloned().unwrap_or(json!([])),
                 })));
-                if matcher.extensions.is_empty() && matcher.name_includes.is_empty() && matcher.older_than_days <= 0.0 {
+                if matcher.extensions.is_empty() && matcher.name_includes.is_empty() && matcher.from_includes.is_empty() && matcher.older_than_days <= 0.0 {
                     return Err(l("조건이 하나 이상 필요합니다", "At least one condition is needed"));
                 }
                 let name = args.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                // 자동 정리가 켜진 폴더는 미리보기 없이 실행된다. Claude 가 넣은 규칙은 꺼 둔 채로 넣고 사용자가 앱에서 켜게 한다.
+                let auto_on = find_target(&cfg, Some(&target)).is_some_and(|t| t.auto);
                 let rule = Rule {
                     id: new_id("r"),
                     name: name.clone(),
-                    enabled: true,
+                    enabled: !auto_on,
                     matcher,
                     action: action.into(),
                     dest: if action == "trash" { String::new() } else { dest },
@@ -228,12 +253,27 @@ impl Server {
                         _ => "auto".into(),
                     },
                 };
+                // 정리 대상 밖을 가리키면 저장은 하되 실행되지 않는다는 것을 알려 준다
+                let outside = find_target(&cfg, Some(&target)).is_some_and(|t| !crate::organizer::rule_dest_inside(&cfg, t, &rule));
                 let last = args.get("position").and_then(Value::as_str) == Some("last");
                 let path = crate::organizer::add_rule(&mut cfg, &target, rule, last)?;
                 save_config(&cfg)?;
-                Ok(json!({ "added": name, "target": path }))
+                let mut out = json!({ "added": name, "target": path, "enabled": !auto_on });
+                if auto_on {
+                    out["note"] = json!(l(
+                        "이 폴더는 자동 정리가 켜져 있어 규칙을 꺼진 상태로 넣었습니다. 사용자가 앱의 규칙 탭에서 켜야 적용됩니다.",
+                        "Auto-tidy is on for this folder, so the rule was added switched off. The user has to turn it on in the app's Rules tab.",
+                    ));
+                }
+                if outside {
+                    out["warning"] = json!(l(
+                        "목적지가 정리 대상 폴더 밖이라 이 규칙은 실행되지 않습니다. 그 폴더를 앱에서 정리할 폴더로 추가하세요.",
+                        "The destination is outside the folders you set up, so this rule won't run. Add that folder in the app.",
+                    ));
+                }
+                Ok(out)
             }
-            "undo_last" => Ok(undo_last()),
+            "undo_last" => Ok(undo_run(args.get("run_id").and_then(Value::as_str))),
             "history" => {
                 let limit = args.get("limit").and_then(Value::as_f64).unwrap_or(5.0).max(0.0) as usize;
                 let runs = load_history();
@@ -246,6 +286,9 @@ impl Server {
                         "at": r.at,
                         "source": r.source,
                         "undone": r.undone,
+                        "state": r.state,
+                        "leftToUndo": r.retryable(),
+                        "failed": r.failed.iter().map(|f| format!("{}: {}", contract_home(&f.file), f.reason)).collect::<Vec<_>>(),
                         "ops": r.ops.iter().map(|o| if o.kind == "move" {
                             format!("{} → {}", contract_home(&o.from), contract_home(o.to.as_deref().unwrap_or("")))
                         } else {
@@ -344,7 +387,7 @@ mod tests {
         assert_eq!(init["result"]["protocolVersion"], json!("2024-11-05"));
         assert!(s.handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).is_none());
         let list = s.handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })).unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 6);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 7);
         let scan = s.handle(&json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "scan_folder", "arguments": { "target": "inbox" } } })).unwrap();
         assert!(scan["result"].get("isError").is_none(), "{scan}");
         let bad = s.handle(&json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": "apply_plan", "arguments": { "item_ids": ["nope"] } } })).unwrap();
@@ -353,5 +396,45 @@ mod tests {
         assert_eq!(rule["result"]["isError"], json!(true));
         let unknown = s.handle(&json!({ "jsonrpc": "2.0", "id": 6, "method": "nope" })).unwrap();
         assert_eq!(unknown["error"]["code"], json!(-32601));
+
+        // 보여 준 계획만 실행한다: 자유 이동은 거절, plan_moves 가 준 id 는 실행
+        let call = |s: &mut Server, id: u32, name: &str, args: Value| -> Value {
+            let res = s.handle(&json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": name, "arguments": args } })).unwrap();
+            let text = res["result"]["content"][0]["text"].as_str().unwrap().to_string();
+            if res["result"]["isError"] == json!(true) { json!({ "error": text }) } else { serde_json::from_str(&text).unwrap() }
+        };
+        let src = inbox.join("memo.pdf").to_string_lossy().into_owned();
+        let direct = call(&mut s, 7, "apply_plan", json!({ "moves": [{ "src": src, "dest_folder": "메모" }] }));
+        assert!(direct["error"].as_str().unwrap().contains("plan_moves"), "{direct}");
+        assert!(inbox.join("memo.pdf").exists(), "계획 없이 넘긴 이동은 실행되지 않는다");
+        let planned = call(&mut s, 8, "plan_moves", json!({ "moves": [
+            { "src": src, "dest_folder": "메모", "reason": "메모 파일" },
+            { "src": src, "dest_folder": sb.join("elsewhere") }
+        ] }));
+        assert_eq!(planned["rejected"].as_array().unwrap().len(), 1, "밖으로 가는 이동은 계획 단계에서 거절");
+        let id = planned["plan"][0]["id"].as_str().unwrap().to_string();
+        assert!(inbox.join("memo.pdf").exists(), "plan_moves 는 파일을 옮기지 않는다");
+        let done = call(&mut s, 9, "apply_plan", json!({ "item_ids": [id] }));
+        assert_eq!(done["results"][0]["ok"], json!(true), "{done}");
+        assert!(inbox.join("메모").join("memo.pdf").exists());
+        let again = call(&mut s, 10, "apply_plan", json!({ "item_ids": [id] }));
+        assert_eq!(again["rejected"].as_array().unwrap().len(), 1, "한 번 쓴 id 는 다시 못 쓴다");
+        // 실행 id 로 골라 되돌리기
+        let run_id = done["runId"].as_str().unwrap().to_string();
+        let undone = call(&mut s, 11, "undo_last", json!({ "run_id": run_id }));
+        assert_eq!(undone["restored"], json!(1));
+        assert!(inbox.join("memo.pdf").exists());
+        // 밖을 가리키는 규칙은 경고와 함께 저장된다
+        // 자동 정리가 켜진 폴더에 Claude 가 넣은 규칙은 꺼진 채로 들어간다(사용자가 앱에서 켜야 실행된다)
+        let mut auto_cfg = load_config().unwrap();
+        auto_cfg.targets[0].auto = true;
+        save_config(&auto_cfg).unwrap();
+        let held = call(&mut s, 13, "add_rule", json!({ "target": "inbox", "name": "전부 버리기", "action": "trash", "extensions": ["pdf"] }));
+        assert_eq!(held["enabled"], json!(false), "{held}");
+        assert!(!load_config().unwrap().targets[0].rules.iter().find(|r| r.name == "전부 버리기").unwrap().enabled);
+        auto_cfg.targets[0].auto = false;
+        save_config(&auto_cfg).unwrap();
+        let warned = call(&mut s, 12, "add_rule", json!({ "target": "inbox", "name": "밖", "action": "move", "extensions": ["zip"], "dest": sb.join("elsewhere") }));
+        assert!(warned["warning"].is_string(), "{warned}");
     }
 }

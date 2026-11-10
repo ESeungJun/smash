@@ -827,7 +827,7 @@ mod tests {
         assert_eq!(parse_suggestions(&json!({ "result": text }).to_string()).unwrap(), s.as_array().unwrap().clone());
         let err = parse_suggestions(&json!({ "is_error": true, "result": "Not logged in" }).to_string()).unwrap_err();
         assert!(err.contains("Not logged in"));
-        let f = FileInfo { name: "a.pdf".into(), path: "/x/a.pdf".into(), size: 2048.0, mtime_ms: 0.0 };
+        let f = FileInfo { name: "a.pdf".into(), path: "/x/a.pdf".into(), size: 2048.0, mtime_ms: 0.0, received_ms: None };
         assert!(build_prompt("/x", &[f], &["/x".into()]).contains("a.pdf | 2KB | 1970-01-01"));
     }
 

@@ -1,7 +1,7 @@
 {
   "name": "smash",
   "productName": "Smash!",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "엄마 등짝 스매싱처럼 다운로드·문서 폴더를 규칙대로 정리하는 앱. API 키 없이 로그인된 Claude(MCP·CLI)와 연동",
   "homepage": "https://github.com/ESeungJun/smash",
   "repository": {
@@ -14,7 +14,7 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "web": "node scripts/build-web.js",
-    "test": "node scripts/build-web.js && cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1",
+    "test": "node --test test/*.test.js && node scripts/build-web.js && cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=1",
     "tauri": "tauri",
     "icons": "npx -y electron@45 scripts/render-icons.js"
   },
