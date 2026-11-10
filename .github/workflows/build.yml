@@ -33,7 +33,8 @@ jobs:
       # generate_context! 가 dist-web 을 읽는다
       - run: node scripts/build-web.js
       # 설정 위치(SMASH_HOME)와 언어가 전역이라 테스트는 하나씩 돈다
-      - run: cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1
+      # 잠금 파일(Cargo.lock)과 다르면 실패한다: 시험한 의존성과 배포하는 의존성을 같게 둔다
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 
   build:
     needs: test
@@ -61,11 +62,11 @@ jobs:
       - name: 설치 파일 (macOS, 임시 서명)
         if: runner.os == 'macOS'
         run: |
-          npx tauri build --target universal-apple-darwin --bundles app
+          npx tauri build --target universal-apple-darwin --bundles app -- --locked
           scripts/make-dmg.sh src-tauri/target/universal-apple-darwin/release/bundle/macos/Smash.app src-tauri/target/universal-apple-darwin/release/bundle/dmg/Smash-macOS.dmg
       - name: 설치 파일 (Windows)
         if: runner.os == 'Windows'
-        run: npx tauri build --bundles nsis
+        run: npx tauri build --bundles nsis -- --locked
       - uses: actions/upload-artifact@v4
         with:
           name: smash-${{ runner.os }}
