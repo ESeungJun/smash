@@ -528,5 +528,133 @@
     return false;
   }
 
-  root.SmashRules = { syncRemoveButton, destPreviewHtml, renderEditor, renderRules, openEditor, addTag, saveDraft, makeRuleFromText, saveProposal, pickDest, loadFolders, handleDraftClick };
+  // ---------- 누름·체크·입력 (events.js 가 부른다) ----------
+
+  function editRule(t, id) {
+    return openEditor(t.rules.find((r) => r.id === id));
+  }
+
+  async function deleteRule(t, id) {
+    t.rules = t.rules.filter((r) => r.id !== id);
+    await saveConfig();
+    renderRules();
+    return doScan();
+  }
+
+  /** 규칙 순서 바꾸기. dir 은 -1(먼저) 또는 1(나중에) */
+  async function moveRule(t, id, dir) {
+    const i = t.rules.findIndex((r) => r.id === id);
+    const j = i + Number(dir);
+    [t.rules[i], t.rules[j]] = [t.rules[j], t.rules[i]];
+    await saveConfig();
+    renderRules();
+    return doScan();
+  }
+
+  async function toggleRule(id, on) {
+    const r = currentTarget().rules.find((x) => x.id === id);
+    r.enabled = on;
+    await saveConfig();
+    renderRules();
+    return doScan();
+  }
+
+  function cancelDraft() {
+    state.draft = null;
+    return renderRules();
+  }
+
+  function cancelProposal() {
+    state.proposal = null;
+    return renderRules();
+  }
+
+  /** 제안 한 줄 고르기. 카드 전체를 다시 그리지 않고 저장 버튼만 맞춘다 */
+  function pickProposal(el) {
+    const i = Number(el.dataset.proposal);
+    if (el.checked) state.proposal.picked.add(i);
+    else state.proposal.picked.delete(i);
+    const btn = $('#proposal-save');
+    btn.disabled = !state.proposal.picked.size;
+    btn.textContent = L(`고른 ${state.proposal.picked.size}개 저장`, `Save ${state.proposal.picked.size} selected`);
+  }
+
+  // 체크 상태는 저장을 기다린 뒤에도 다시 읽는다(그 사이 또 눌렀으면 마지막 상태로 알린다)
+  async function setRecursive(el) {
+    const t = currentTarget();
+    t.recursive = el.checked;
+    await saveConfig();
+    toast(
+      el.checked
+        ? L(`${targetName(t)} 안의 하위 폴더 파일도 정리해요. 미리보기에서 꼭 확인하세요.`, `Files in ${targetName(t)}'s subfolders are included. Check the preview first.`)
+        : L('이제 하위 폴더는 건드리지 않아요.', 'Subfolders are left alone now.'),
+      4000,
+    );
+    return doScan();
+  }
+
+  async function setLink(value) {
+    const t = currentTarget();
+    t.link = value;
+    await saveConfig();
+    renderRules();
+    return doScan();
+  }
+
+  const TAG_INPUTS = { 'd-ext': 'ext', 'd-word': 'word', 'd-from': 'from' };
+  const isTagInput = (el) => el.id === 'd-ext' || el.id === 'd-word' || el.id === 'd-from';
+
+  /** 태그 입력칸: 엔터·쉼표로 태그를 넣고, 빈 칸에서 지우기를 누르면 마지막 태그를 뺀다 */
+  function tagKeydown(e) {
+    const el = e.target;
+    const kind = TAG_INPUTS[el.id];
+    if ((e.key === 'Enter' || e.key === ',') && el.value.trim()) {
+      e.preventDefault();
+      addTag(kind, el.value);
+      return renderEditor(el.id);
+    }
+    if (e.key === 'Backspace' && !el.value) {
+      const list = { ext: state.draft.exts, word: state.draft.words, from: state.draft.froms }[kind];
+      if (list.length) {
+        list.pop();
+        return renderEditor(el.id);
+      }
+    }
+  }
+
+  /** 편집기 이름·목적지 입력. 목적지는 고칠 때마다 아래 미리보기 글자를 맞춘다 */
+  function draftInput(e) {
+    const d = state.draft;
+    if (!d) return;
+    if (e.target.id === 'd-name') d.name = e.target.value;
+    if (e.target.id === 'd-dest') {
+      d.dest = e.target.value;
+      $('#dest-preview').innerHTML = destPreviewHtml(d);
+    }
+  }
+
+  root.SmashRules = {
+    syncRemoveButton,
+    renderRules,
+    renderEditor,
+    openEditor,
+    handleDraftClick,
+    saveDraft,
+    makeRuleFromText,
+    saveProposal,
+    pickDest,
+    loadFolders,
+    editRule,
+    deleteRule,
+    moveRule,
+    toggleRule,
+    cancelDraft,
+    cancelProposal,
+    pickProposal,
+    setRecursive,
+    setLink,
+    isTagInput,
+    tagKeydown,
+    draftInput,
+  };
 })(window);

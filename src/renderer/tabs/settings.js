@@ -1,10 +1,11 @@
 'use strict';
-/* global tidy */
+/* global tidy, SmashSound */
 // 설정 탭: 자동 정리·효과·알림·언어 카드, 자동 정리를 켜기 전 확인, Claude 연결 상태(사이드바 알약 포함)와 MCP 등록,
 // 앱 정보·업데이트 카드를 맡는다. events.js(스위치·버튼·업데이트 알림)와 app.js(시작·탭 전환)가 window.SmashSettings 로 부른다.
 (function (root) {
   const { $, L, esc, toast, ico, switchHtml, dotLine } = root.SmashUI;
   const { state, saveConfig, dirOf, targetName, cliReady, destText } = root.SmashState;
+  const { renderPreview } = root.SmashPreview;
 
   function setPill() {
     const s = state.integration;
@@ -271,5 +272,98 @@
     renderSettings();
   }
 
-  root.SmashSettings = { refreshIntegration, renderUpdate, checkUpdate, renderSettings, askAuto, confirmAuto, register };
+  // ---------- 스위치·버튼 (events.js 가 부른다) ----------
+
+  function cancelAutoConfirm() {
+    state.autoConfirm = null;
+    return renderSettings();
+  }
+
+  /** 폴더별 자동 정리 스위치. 켤 때는 바로 켜지 않고 확인부터 보여 준다 */
+  async function switchAuto(el) {
+    const t = state.config.targets.find((x) => x.id === el.dataset.auto);
+    if (el.checked) {
+      // 바로 켜지 않는다. 지금 쌓인 파일을 어떻게 치울지 먼저 보여 준다
+      el.checked = false;
+      return askAuto(t.id);
+    }
+    state.autoConfirm = null;
+    t.auto = false;
+    await saveConfig();
+    renderSettings();
+    return toast(L(`${targetName(t)} 자동 정리를 껐어요.`, `Auto-tidy off for ${targetName(t)}.`));
+  }
+
+  function setAutoTrash(on) {
+    state.autoConfirm.autoTrash = on;
+    return renderSettings();
+  }
+
+  function setAutoDelay(value) {
+    state.config.settings.autoDelaySec = Number(value);
+    return saveConfig();
+  }
+
+  // 켜고 끄기만 하는 설정 스위치: 요소 id → settings 키
+  const TOGGLES = { 'set-notify': 'notify', 'set-login': 'openAtLogin', 'set-smash': 'smash', 'set-open': 'openAfter', 'set-sound': 'sound', 'set-nag': 'nag', 'set-weekly': 'weekly' };
+  const isToggle = (el) => !!TOGGLES[el.id];
+
+  function setToggle(el) {
+    state.config.settings[TOGGLES[el.id]] = el.checked;
+    // 소리를 켜면 어떤 소리인지 한 번 들려준다
+    if (el.id === 'set-sound' && el.checked) SmashSound.play('slap');
+    return saveConfig();
+  }
+
+  // 체크 상태는 저장을 기다린 뒤에도 다시 읽는다(원래 동작 그대로)
+  async function setVision(el) {
+    state.config.ai = { ...(state.config.ai || {}), vision: el.checked };
+    await saveConfig();
+    if (state.scan) renderPreview();
+    return toast(
+      el.checked
+        ? L('켰어요. 미리보기에서 "내용 보고 묶기"를 누를 때만 썸네일을 보내요.', 'On. Thumbnails are sent only when you press "Group by content" in the preview.')
+        : L('껐어요. 사진 내용은 Claude에 보내지 않아요.', 'Off. No photo content goes to Claude.'),
+      4000,
+    );
+  }
+
+  /** 화면 언어를 바꾸면 다시 불러오고, 다시 열 때 설정 탭으로 돌아온다(app.js init) */
+  async function setLanguage(value) {
+    state.config.settings.language = value;
+    await saveConfig();
+    sessionStorage.setItem('tab', 'settings');
+    return location.reload();
+  }
+
+  async function setModel(el) {
+    state.config.ai = { ...(state.config.ai || {}), model: el.value };
+    await saveConfig();
+    toast(L(`Claude 작업에 ${el.value} 모델을 써요.`, `Using ${el.value} for Claude tasks.`));
+  }
+
+  function installUpdate(btn) {
+    btn.disabled = true;
+    return tidy.installUpdate();
+  }
+
+  root.SmashSettings = {
+    refreshIntegration,
+    renderSettings,
+    renderUpdate,
+    checkUpdate,
+    askAuto,
+    confirmAuto,
+    register,
+    cancelAutoConfirm,
+    switchAuto,
+    setAutoTrash,
+    setAutoDelay,
+    isToggle,
+    setToggle,
+    setVision,
+    setLanguage,
+    setModel,
+    installUpdate,
+  };
 })(window);

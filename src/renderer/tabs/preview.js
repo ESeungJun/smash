@@ -5,7 +5,7 @@
 // events.js(누름·체크)와 app.js(폴더 고르기)·다른 탭(저장 뒤 다시 스캔)이 window.SmashPreview 로 부른다.
 (function (root) {
   const { $, L, esc, reducedMotion, toast, fmtSize, ico } = root.SmashUI;
-  const { state, baseName, dirOf, expand, contract, targetName, cliReady, destText } = root.SmashState;
+  const { state, saveConfig, baseName, dirOf, expand, contract, targetName, cliReady, destText } = root.SmashState;
 
   async function doScan() {
     if (!state.targetId) return;
@@ -422,5 +422,64 @@
     $('#apply').innerHTML = `<span class="spinner"></span>${L('정리 중…', 'Tidying…')} ${done.toLocaleString()} / ${total.toLocaleString()}`;
   }
 
-  root.SmashPreview = { doScan, allPlanItems, syncFolderChecks, renderPreview, renderResult, renderIntro, aiGroupMedia, updateApplyButton, aiSuggest, doApply, onHit, onProgress };
+  // ---------- 누름·체크 (events.js 가 부른다) ----------
+
+  /** 폴더 옆 ▾: 접고 펼친다 */
+  function toggleCollapse(key) {
+    if (state.collapsed.has(key)) state.collapsed.delete(key);
+    else state.collapsed.add(key);
+    return renderPreview();
+  }
+
+  /** 전체 선택/해제: 하나라도 빠져 있으면 모두 넣고, 아니면 모두 뺀다 */
+  function toggleAll() {
+    if (state.unchecked.size) state.unchecked.clear();
+    else allPlanItems().forEach((it) => state.unchecked.add(it.id));
+    return renderPreview();
+  }
+
+  /** 파일 한 줄의 체크. 트리 전체를 다시 그리지 않고 그 줄과 폴더 체크만 맞춘다 */
+  function checkItem(el) {
+    if (el.checked) state.unchecked.delete(el.dataset.item);
+    else state.unchecked.add(el.dataset.item);
+    el.closest('.trow').classList.toggle('off', !el.checked);
+    syncFolderChecks();
+    return updateApplyButton();
+  }
+
+  /** 폴더 체크: 그 아래 파일을 모두 넣거나 뺀다 */
+  function checkFolder(el) {
+    const ids = state.folderItems.get(el.dataset.folder) || [];
+    ids.forEach((id) => (el.checked ? state.unchecked.delete(id) : state.unchecked.add(id)));
+    return renderPreview();
+  }
+
+  /** 방금 정리 결과 띠 닫기 */
+  function closeResult() {
+    state.lastResult = null;
+    return renderResult();
+  }
+
+  /** 처음 안내 "알겠어요" */
+  function dismissIntro() {
+    state.config.settings.introSeen = true;
+    renderIntro();
+    return saveConfig();
+  }
+
+  root.SmashPreview = {
+    doScan,
+    renderPreview,
+    aiGroupMedia,
+    aiSuggest,
+    doApply,
+    onHit,
+    onProgress,
+    toggleCollapse,
+    toggleAll,
+    checkItem,
+    checkFolder,
+    closeResult,
+    dismissIntro,
+  };
 })(window);
