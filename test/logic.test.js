@@ -51,6 +51,65 @@ test('규칙 목적지가 정리할 폴더 안인지', () => {
   assert.equal(L.resolvePath('~/Downloads', 'a/../b/./c', '/Users/me', '/'), '/Users/me/Downloads/b/c');
 });
 
+// 아래 기대값은 2026-11-17 리팩토링 전 app.js 의 destText·expand·contract·baseName 이 낸 값을 그대로 옮긴 것(특성 테스트).
+test('경로 표기: 홈 줄이기·펼치기·마지막 이름', () => {
+  const mac = ['/Users/me', '/'];
+  assert.deepEqual(['~', '~/a/b', '~x', '/abs/p', 'rel/p', ''].map((p) => L.toNativePath(p, ...mac)), ['/Users/me', '/Users/me/a/b', '~x', '/abs/p', 'rel/p', '']);
+  assert.deepEqual(['/Users/me', '/Users/me/a/b', '/Users/mex', '/other', ''].map((p) => L.contractPath(p, ...mac)), ['~', '~/a/b', '/Users/mex', '/other', '']);
+  const win = ['C:\\Users\\me', '\\'];
+  assert.deepEqual(['~', '~/a/b', '/abs/p', 'rel/p'].map((p) => L.toNativePath(p, ...win)), ['C:\\Users\\me', 'C:\\Users\\me\\a\\b', '\\abs\\p', 'rel\\p']);
+  assert.deepEqual(['C:\\Users\\me', 'C:\\Users\\me\\a\\b', 'C:\\Users\\mex'].map((p) => L.contractPath(p, ...win)), ['~', '~/a/b', 'C:\\Users\\mex']);
+  assert.deepEqual(['/a/b/', 'C:\\x\\y', 'name', '', '/'].map(L.baseName), ['b', 'y', 'name', '', '/']);
+});
+
+test('규칙 목적지 표기: 정리 대상 폴더 이름 기준, 밖이면 ~ 경로', () => {
+  const targets = [{ id: 'dl', path: '~/Downloads' }, { id: 'docs', path: '~/Documents' }];
+  const [dl, docs] = targets;
+  const label = (dest, owner = dl) => L.destLabel(dest, owner, targets, '/Users/me', '/');
+  const cases = [
+    ['', dl, ''],
+    ['자료', dl, 'Downloads/자료'],
+    ['자료/계약서', dl, 'Downloads/자료/계약서'],
+    ['~/Documents', dl, 'Documents'],
+    ['~/Documents/자료', dl, 'Documents/자료'],
+    ['/Users/me/Documents/a', dl, 'Documents/a'],
+    ['~/Archive', dl, '~/Archive'],
+    ['~/DocumentsBackup', dl, '~/DocumentsBackup'],
+    ['C:/x', dl, 'C:/x'],
+    ['계약서', docs, 'Documents/계약서'],
+    ['/Users/me/Downloads', docs, 'Downloads'],
+    ['자료', null, '/자료'],
+    // resolvePath 와 다른 곳: `.`·`..`·겹친 `/`·끝 `/` 를 정리하지 않고, `\` 로 시작하면 상대 경로로 본다
+    ['../Archive', dl, 'Downloads/../Archive'],
+    ['사진/../받은 것/', dl, 'Downloads/사진/../받은 것/'],
+    ['~/Documents/영수증/', dl, 'Documents/영수증/'],
+    ['./a', dl, 'Downloads/./a'],
+    ['a//b', dl, 'Downloads/a//b'],
+    ['\\x', dl, 'Downloads/\\x'],
+  ];
+  for (const [dest, owner, want] of cases) assert.equal(label(dest, owner), want, dest);
+
+  const winTargets = [{ path: '~/Downloads' }, { path: 'C:\\Work' }];
+  const win = (dest) => L.destLabel(dest, winTargets[0], winTargets, 'C:\\Users\\me', '\\');
+  assert.equal(win('자료/계약서'), 'Downloads/자료/계약서');
+  assert.equal(win('~/Downloads/x'), 'Downloads/x');
+  assert.equal(win('C:\\Work\\a\\b'), 'Work/a/b');
+  assert.equal(win('C:/Work/a'), 'Work/a');
+  assert.equal(win('D:\\x'), 'D:\\x');
+  assert.equal(win('\\x'), 'Downloads//x');
+  assert.equal(win('..\\Up'), 'Downloads/../Up');
+});
+
+test('규칙 목적지 표기는 resolvePath 로 바꿀 수 없다: `..` 가 있으면 보이는 글자가 다르다', () => {
+  // 실제 이동(Rust config::resolve)과 "밖" 판정(destInsideTargets)은 `..` 를 정리한다. 표기는 정리하지 않는다.
+  const owner = { path: '~/Downloads' };
+  const shown = L.destLabel('../Archive', owner, [owner], '/Users/me', '/');
+  const resolved = L.resolvePath(owner.path, '../Archive', '/Users/me', '/');
+  assert.equal(shown, 'Downloads/../Archive');
+  assert.equal(resolved, '/Users/me/Archive');
+  assert.equal(L.destInsideTargets('../Archive', owner.path, [owner], '/Users/me', '/'), false);
+});
+
 test('타격음: 셀수록 크고 낮고 길다. 알림음보다 크지 않다', () => {
   const [tap, slap, wham] = ['tap', 'slap', 'wham'].map(L.slapSpec);
   assert.ok(tap.gain < slap.gain && slap.gain < wham.gain);

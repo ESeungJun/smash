@@ -60,6 +60,39 @@
     return `${drive}${sep}${parts.join(sep)}`;
   }
 
+  /** 경로의 마지막 이름. 구분자는 `/`·`\` 둘 다 본다. */
+  const baseName = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || p;
+
+  /** 화면 표기 경로(`~/a/b`)를 이 OS 경로로: `~` 를 홈으로, `/` 를 sep 으로. `.`·`..` 는 정리하지 않는다. */
+  const toNativePath = (p, home, sep) => String(p).replace(/^~(?=[\\/]|$)/, home).split('/').join(sep);
+
+  /** 이 OS 경로를 화면 표기로: 홈 아래면 `~/a/b`, 아니면 그대로. */
+  function contractPath(p, home, sep) {
+    if (!p) return '';
+    if (p === home) return '~';
+    if (p.startsWith(home + sep)) return `~${p.slice(home.length).split(sep).join('/')}`;
+    return p;
+  }
+
+  /**
+   * 규칙 목적지를 화면에 보일 이름으로: 정리 대상 폴더 안이면 `Documents/자료`, 밖이면 `~/Archive`.
+   * owner 는 상대 경로의 기준 폴더({ path }), 없으면 상대 경로를 루트 기준으로 본다.
+   * resolvePath 와 달리 `.`·`..`·겹친 `/`·끝 `/` 를 정리하지 않고, `\` 로 시작하는 경로를 상대 경로로 본다.
+   * 그래서 resolvePath 로 바꾸면 보이는 글자가 달라진다(docs/리팩토링/2026-11-17_화면-스크립트-나누기.md "발견한 문제").
+   */
+  function destLabel(dest, owner, targets, home, sep) {
+    if (!dest) return '';
+    const rootAbs = owner ? toNativePath(owner.path, home, sep) : '';
+    const isAbs = dest.startsWith('~') || dest.startsWith('/') || /^[A-Za-z]:/.test(dest);
+    const full = isAbs ? toNativePath(dest, home, sep) : rootAbs + sep + dest.split('/').join(sep);
+    for (const target of targets) {
+      const r = toNativePath(target.path, home, sep);
+      if (full === r) return baseName(target.path);
+      if (full.startsWith(r + sep)) return `${baseName(target.path)}/${full.slice(r.length + 1).split(sep).join('/')}`;
+    }
+    return contractPath(full, home, sep);
+  }
+
   /** 규칙 목적지가 정리 대상 폴더 안인지. 밖이면 실행 단계에서 거부되므로 미리 알려 준다. */
   function destInsideTargets(dest, ownerPath, targets, home, sep) {
     if (!String(dest || '').trim()) return true;
@@ -115,5 +148,18 @@
     return `${Math.max(1, Math.round(n / 1e3))}KB`;
   }
 
-  return { mergeConfig, resolvePath, destInsideTargets, slapSpec, staggerDelays, runStatus, failures, fmtBytes };
+  return {
+    mergeConfig,
+    resolvePath,
+    baseName,
+    toNativePath,
+    contractPath,
+    destLabel,
+    destInsideTargets,
+    slapSpec,
+    staggerDelays,
+    runStatus,
+    failures,
+    fmtBytes,
+  };
 });
