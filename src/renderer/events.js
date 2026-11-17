@@ -4,6 +4,7 @@
 // 여기서는 어느 요소인지만 보고 탭 모듈(SmashPreview·SmashRules·SmashHistory·SmashSettings)이나 SmashApp 으로 넘긴다.
 // 분기 순서가 곧 우선순위다(예: 편집기가 열려 있으면 편집기 버튼이 규칙 카드 버튼보다 먼저). 순서를 바꾸지 않는다.
 // app.js 가 시작할 때 init 보다 먼저 bind() 를 한 번 부른다.
+// SmashApp 은 bind() 안에서 꺼내므로, app.js 가 root.SmashApp 을 넣은 뒤에 bind() 를 불러야 한다.
 (function (root) {
   function bind() {
     const { $, L, toast } = root.SmashUI;

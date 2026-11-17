@@ -602,7 +602,7 @@
   }
 
   const TAG_INPUTS = { 'd-ext': 'ext', 'd-word': 'word', 'd-from': 'from' };
-  const isTagInput = (el) => el.id === 'd-ext' || el.id === 'd-word' || el.id === 'd-from';
+  const isTagInput = (el) => Object.prototype.hasOwnProperty.call(TAG_INPUTS, el.id); // Object.hasOwn 은 Safari 15.4+ 라 macOS 11 최소 사양에서 못 씀
 
   /** 태그 입력칸: 엔터·쉼표로 태그를 넣고, 빈 칸에서 지우기를 누르면 마지막 태그를 뺀다 */
   function tagKeydown(e) {
