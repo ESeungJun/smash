@@ -1,100 +1,11 @@
 'use strict';
-/* global tidy, SmashLogic, SmashSound */
+/* global tidy, SmashLogic, SmashSound, SmashUI, SmashState */
 
-const $ = (sel) => document.querySelector(sel);
-// 화면 언어. main이 설정(system이면 OS 언어)을 보고 정해서 config:get으로 넘겨준다.
-let LANG = 'ko';
-const L = (ko, en) => (LANG === 'ko' ? ko : en);
-const esc = (s) =>
-  String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-
-const state = {
-  config: null,
-  home: '',
-  sep: '/',
-  categories: [],
-  targetId: null,
-  scan: null,
-  aiItems: [],
-  aiNoSuggestion: [],
-  unchecked: new Set(),
-  collapsed: new Set(),
-  folderItems: new Map(), // 트리 폴더 경로 → 그 아래 항목 id들
-  busy: false,
-  draft: null, // 편집 중인 규칙
-  proposal: null, // Claude가 만든 규칙 세트 { summary, changes, picked:Set }
-  removeArmed: null, // 사이드바에서 빼기 확인을 기다리는 폴더 id
-  folders: [],
-  integration: null,
-  update: null,
-  rev: '', // 마지막으로 읽거나 저장한 설정 파일의 상태
-  base: null, // 그때의 설정(다른 프로그램이 바꾼 것과 합칠 때 기준)
-  canRestoreTrash: true,
-  lastResult: null, // 방금 정리에서 옮기지 못한 파일 { failed, historyError }
-  autoConfirm: null, // 자동 정리를 켜기 전 확인 중인 폴더 { id, scan, autoTrash }
-  autoCollapse: false,
-};
-
-const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-
-// ---------- 공통 ----------
-
-let toastTimer;
-function toast(msg, ms = 2800) {
-  const el = $('#toast');
-  el.textContent = msg;
-  el.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), ms);
-}
-
-function fmtSize(n) {
-  if (n >= 1 << 30) return `${(n / (1 << 30)).toFixed(1)}GB`;
-  if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)}MB`;
-  return `${Math.max(1, Math.round(n / 1024))}KB`;
-}
-
-const baseName = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || p;
-const dirOf = (p) => p.slice(0, p.lastIndexOf(state.sep));
-const expand = (p) => String(p).replace(/^~(?=[\\/]|$)/, state.home).split('/').join(state.sep);
-function contract(p) {
-  if (!p) return '';
-  if (p === state.home) return '~';
-  if (p.startsWith(state.home + state.sep)) return `~${p.slice(state.home.length).split(state.sep).join('/')}`;
-  return p;
-}
-
-const currentTarget = () => state.config.targets.find((t) => t.id === state.targetId);
-const targetName = (t) => baseName(t.path);
-const cliReady = () => state.integration?.cli?.installed && !state.integration.cli.error;
-
-// 16px 선 아이콘. 색은 currentColor를 따른다.
-const ICONS = {
-  folder: '<path d="M2 4.5c0-.6.4-1 1-1h3.2l1.5 1.6H13c.6 0 1 .4 1 1V12c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1z"/>',
-  file: '<path d="M4 2h5l3 3v8.5c0 .3-.2.5-.5.5h-7a.5.5 0 0 1-.5-.5v-11c0-.3.2-.5.5-.5z"/><path d="M9 2v3h3"/>',
-  trash: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.6c0 .5.4.9.9.9h4c.5 0 .9-.4.9-.9l.6-8.6"/>',
-};
-const ico = (name) =>
-  `<svg class="ico" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">${ICONS[name]}</svg>`;
-
-function adoptConfig(config, rev) {
-  state.config = config;
-  state.rev = rev;
-  state.base = JSON.parse(JSON.stringify(config));
-}
-
-// 저장 직전에 디스크를 다시 본다. 그 사이 다른 프로그램(Claude 의 MCP 서버)이 규칙을 넣었으면 합쳐서 저장한다.
-async function saveConfig() {
-  try {
-    const disk = await tidy.getConfig();
-    if (disk.rev !== state.rev) state.config = SmashLogic.mergeConfig(state.base, state.config, disk.config);
-  } catch {
-    // 못 읽으면 화면 것을 그대로 저장한다
-  }
-  const saved = await tidy.saveConfig(state.config);
-  adoptConfig(saved.config, saved.rev);
-  renderTargets();
-}
+const { $, L, esc, reducedMotion, toast, fmtSize, ico, switchHtml, dotLine } = SmashUI;
+const { state, adoptConfig, saveConfig, baseName, dirOf, expand, contract, currentTarget, targetName, cliReady, linkBase, destText, destInside } =
+  SmashState;
+// 저장할 때마다 사이드바 폴더 목록을 다시 그린다
+SmashState.onSaved(() => renderTargets());
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
@@ -636,26 +547,6 @@ function chipList(values, max = 5) {
   return values.length > max ? `${shown}<span class="chip more">+${values.length - max}</span>` : shown;
 }
 
-function destText(dest, owner) {
-  if (!dest) return '';
-  const t = owner || currentTarget();
-  const rootAbs = t ? expand(t.path) : '';
-  const isAbs = dest.startsWith('~') || dest.startsWith('/') || /^[A-Za-z]:/.test(dest);
-  const full = isAbs ? expand(dest) : rootAbs + state.sep + dest.split('/').join(state.sep);
-  for (const target of state.config.targets) {
-    const r = expand(target.path);
-    if (full === r) return targetName(target);
-    if (full.startsWith(r + state.sep)) return `${targetName(target)}/${full.slice(r.length + 1).split(state.sep).join('/')}`;
-  }
-  return contract(full);
-}
-
-/** 규칙 목적지가 정리할 폴더 안인지 */
-function destInside(dest, owner) {
-  const t = owner || currentTarget();
-  return !t || SmashLogic.destInsideTargets(dest, t.path, state.config.targets, state.home, state.sep);
-}
-
 const groupLabel = (g) =>
   ({ auto: L('용도·이름·시간별로 나눠서', 'split by purpose, name & time'), month: L('연·월별로 나눠서', 'split by month') })[g] || '';
 
@@ -879,8 +770,6 @@ function renderEditor(focusId) {
   if (focusId) $(`#${focusId}`)?.focus();
   refreshMatches();
 }
-
-const linkBase = (t) => (t?.link ? state.config.targets.find((x) => x.id === t.link) : null);
 
 function targetCardHtml(t) {
   const base = linkBase(t);
@@ -1222,9 +1111,6 @@ async function refreshIntegration() {
   }
   setPill();
 }
-
-const switchHtml = (attr, on) => `<label class="switch"><input type="checkbox" ${attr} ${on ? 'checked' : ''} /><span></span></label>`;
-const dotLine = (on, onText, offText) => `<div class="status-line"><span class="dot ${on ? 'on' : 'off'}"></span>${on ? onText : offText}</div>`;
 
 // 설정 탭 맨 아래 앱 정보 카드. 업데이트 상태가 바뀌면 이 카드만 다시 그린다.
 function updateCardHtml() {
@@ -1781,8 +1667,8 @@ document.addEventListener('pointerdown', () => SmashSound.warm(), { once: true }
 
 // index.html에 적힌 고정 문구(한국어)를 화면 언어에 맞춘다.
 function translateStatic() {
-  document.documentElement.lang = LANG;
-  if (LANG === 'ko') return;
+  document.documentElement.lang = SmashUI.getLang();
+  if (SmashUI.getLang() === 'ko') return;
   const set = (sel, text) => {
     const el = $(sel);
     if (el) el.textContent = text;
@@ -1805,7 +1691,7 @@ function translateStatic() {
   const { config, configPath, home, sep, categories, platform, lang, rev, canRestoreTrash } = await tidy.getConfig();
   Object.assign(state, { configPath, home, sep, categories, platform, canRestoreTrash: canRestoreTrash !== false });
   adoptConfig(config, rev);
-  LANG = lang;
+  SmashUI.setLang(lang);
   translateStatic();
   tidy.updateStatus().then((u) => {
     state.update = u;
