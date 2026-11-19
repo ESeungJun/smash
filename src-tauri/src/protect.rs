@@ -23,7 +23,7 @@ const PROJECT_FILES: &[&str] = &[
     "makefile", "cmakelists.txt", "dockerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml", "procfile",
     "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradle.properties", "pom.xml", "androidmanifest.xml",
     "vercel.json", "netlify.toml", "wrangler.toml", "wrangler.json", "firebase.json", ".firebaserc", "app.json", "eas.json", "angular.json",
-    "nx.json", "turbo.json", "lerna.json", "biome.json", "claude.md", "agents.md", "gemini.md", ".mcp.json", "settings.json", "settings.local.json",
+    "nx.json", "turbo.json", "renovate.json", "lerna.json", "biome.json", "claude.md", "agents.md", "gemini.md", ".mcp.json", "settings.json", "settings.local.json",
     "launch.json", "tasks.json", ".editorconfig", ".prettierrc", ".eslintrc", ".eslintrc.json", ".babelrc", ".npmrc", ".nvmrc", ".gitignore",
     ".gitattributes", ".dockerignore",
 ];
@@ -55,8 +55,30 @@ fn is_project_name(lower: &str) -> bool {
         || (lower.starts_with("docker-compose") && (lower.ends_with(".yml") || lower.ends_with(".yaml")))
         || (lower.starts_with("tsconfig") && lower.ends_with(".json"))
         || lower.starts_with("dockerfile")
-        // vite.config.js, next.config.mjs, tailwind.config.ts …
-        || lower.split('.').rev().nth(1).is_some_and(|s| s == "config") && CODE_EXTS.contains(&ext_of(lower).as_str())
+        // vite.config.js, next.config.mjs, jest.config.json, tailwind.config.ts …
+        || lower.split('.').rev().nth(1).is_some_and(|s| s == "config") && (CODE_EXTS.contains(&ext_of(lower).as_str()) || ["json", "yml", "yaml"].contains(&ext_of(lower).as_str()))
+        // .prettierrc.json, .eslintrc.yml, .swcrc, .babelrc.js …
+        || lower.strip_prefix('.').and_then(|r| r.split('.').next()).is_some_and(|stem| stem.len() > 2 && stem.ends_with("rc"))
+}
+
+/// 목적지가 개발 프로젝트 폴더 안인지. 목적지부터 정리 대상 폴더(`root`)까지 거슬러 올라가며 본다.
+/// root 자체는 .git 이 있을 때만 프로젝트다(`check` 와 같은 기준).
+pub fn dest_in_project(dest: &Path, root: &Path) -> bool {
+    let mut dir = Some(dest);
+    while let Some(d) = dir {
+        if !d.starts_with(root) {
+            break;
+        }
+        let project = if d == root { d.join(".git").exists() } else { d.exists() && is_project_dir(d) };
+        if project {
+            return true;
+        }
+        if d == root {
+            break;
+        }
+        dir = d.parent();
+    }
+    false
 }
 
 /// 이 폴더가 개발 프로젝트인지 (.git, package.json, *.xcodeproj …)
@@ -121,12 +143,27 @@ mod tests {
         assert_eq!(c("vite.config.ts"), Some(Reason::ProjectFile));
         assert_eq!(c("index.ts"), Some(Reason::Code));
         assert_eq!(c("main.py"), Some(Reason::Code));
+        for f in ["jest.config.json", ".prettierrc.json", ".eslintrc.yml", ".swcrc", "renovate.json"] {
+            assert_eq!(check(&root.join(f), &root, &[]), Some(Reason::ProjectFile), "{f}");
+        }
         assert_eq!(c("notes.md"), None, "문서는 막지 않는다");
         assert_eq!(c("logo.svg"), None);
         assert_eq!(c("data.json"), None, "흔한 json 은 막지 않는다(리소스일 수 있다)");
         assert_eq!(c("app/README.md"), Some(Reason::InProject), "프로젝트 폴더 안이면 무엇이든 막는다");
         assert_eq!(check(&root.join("main.py"), &root, &["py".into()]), None, "규칙이 py 를 직접 적었으면 사용자가 고른 것");
         assert_eq!(check(&root.join("package.json"), &root, &["json".into()]), Some(Reason::ProjectFile), "설정 파일 이름은 늘 막는다");
+    }
+
+    #[test]
+    fn dest_inside_project_is_refused() {
+        let root = sandbox().join("protect-dest");
+        let _ = std::fs::remove_dir_all(&root);
+        write(&root.join("myapp/package.json"), "x", 0);
+        write(&root.join("자료/a.pdf"), "x", 0);
+        assert!(dest_in_project(&root.join("myapp"), &root));
+        assert!(dest_in_project(&root.join("myapp/src/새폴더"), &root), "아직 없는 하위 폴더도 조상이 프로젝트면 막는다");
+        assert!(!dest_in_project(&root.join("자료"), &root));
+        assert!(!dest_in_project(&root, &root));
     }
 
     #[test]
