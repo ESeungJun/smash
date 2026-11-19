@@ -1026,6 +1026,8 @@ async fn scan(target_id: Option<String>, shallow: Option<bool>) -> Result<Value,
             "unmatched": unmatched,
             "blocked": decorate(&res.blocked),
             "truncated": res.truncated,
+            // 정리 대상이 git 저장소 안이면 그 위치(미리보기 경고용, #8)
+            "repo": res.repo.as_deref().map(label),
         }))
     })
     .await
