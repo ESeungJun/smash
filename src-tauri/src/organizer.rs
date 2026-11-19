@@ -88,6 +88,16 @@ pub struct Scan {
     pub blocked: Vec<Item>,
     /// 파일이 너무 많아 일부만 봤다
     pub truncated: bool,
+    /// 정리 대상 폴더가 git 저장소의 하위 폴더면 그 저장소 위치(경고만 한다, #8)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+}
+
+/// 정리 대상 폴더의 위쪽 폴더 중 git 저장소가 있으면 그 위치. 홈 폴더 자체가 저장소(dotfiles 등)인 경우는 뺀다:
+/// 그걸 막으면 홈 아래 모든 폴더를 정리하지 못한다. 정리 대상 자체가 저장소인 경우는 protect 가 이미 막는다.
+pub fn enclosing_repo(root: &Path) -> Option<PathBuf> {
+    let home = crate::config::home();
+    root.ancestors().skip(1).take_while(|a| *a != home.as_path()).find(|a| a.join(".git").exists()).map(Path::to_path_buf)
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -685,7 +695,8 @@ pub fn scan_target_with(cfg: &Config, reference: Option<&str>, subfolders: bool)
         }
     }
     blocked.extend(protected);
-    Ok(Scan { target_id: target.id.clone(), root: root.to_string_lossy().into_owned(), items, unmatched, blocked, truncated })
+    let repo = enclosing_repo(&root).map(|r| r.to_string_lossy().into_owned());
+    Ok(Scan { target_id: target.id.clone(), root: root.to_string_lossy().into_owned(), items, unmatched, blocked, truncated, repo })
 }
 
 /// 기존 패턴을 배울 폴더: 목적지를 품은 정리 대상 폴더 중 가장 안쪽
