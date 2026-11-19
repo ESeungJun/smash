@@ -12,49 +12,75 @@
     return ctx;
   }
 
-  /** 주어진 오디오 컨텍스트(실시간이든 오프라인이든)의 `at` 시각에 타격음 하나를 놓는다. */
+  /** 흰 소음 버퍼 (ms 길이) */
+  function noiseBuffer(ac, ms) {
+    const frames = Math.max(1, Math.round((ac.sampleRate * ms) / 1000));
+    const buffer = ac.createBuffer(1, frames, ac.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < frames; i += 1) data[i] = Math.random() * 2 - 1;
+    return buffer;
+  }
+
+  /** 주어진 오디오 컨텍스트(실시간이든 오프라인이든)의 `at` 시각에 타격음 하나를 놓는다. 소리 길이(초)를 돌려준다. */
   function schedule(ac, level, at = ac.currentTime) {
     const spec = SmashLogic.slapSpec(level);
     const master = ac.createGain();
     master.gain.value = spec.gain;
     master.connect(ac.destination);
 
-    const hit = (when, scale) => {
-      // 손바닥이 닿는 소리: 흰 소음을 대역 필터로 거르고 아주 빨리 줄인다
-      const frames = Math.max(1, Math.round((ac.sampleRate * spec.noiseMs) / 1000));
-      const buffer = ac.createBuffer(1, frames, ac.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < frames; i += 1) data[i] = Math.random() * 2 - 1;
-      const noise = ac.createBufferSource();
-      noise.buffer = buffer;
-      const band = ac.createBiquadFilter();
-      band.type = 'bandpass';
-      band.frequency.value = spec.bandHz;
-      band.Q.value = spec.q;
+    // 소음 길: 고역 통과 → (대역 필터로 살린 울림 + 그대로 둔 날카로운 앞소리)
+    const high = ac.createBiquadFilter();
+    high.type = 'highpass';
+    high.frequency.value = spec.highHz;
+    const band = ac.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = spec.bandHz;
+    band.Q.value = spec.q;
+    const bandGain = ac.createGain();
+    bandGain.gain.value = 1.6;
+    const crack = ac.createGain();
+    crack.gain.value = 0.55;
+    high.connect(band).connect(bandGain).connect(master);
+    high.connect(crack).connect(master);
+
+    const burst = (when, ms, peak) => {
+      const src = ac.createBufferSource();
+      src.buffer = noiseBuffer(ac, ms);
       const env = ac.createGain();
-      env.gain.setValueAtTime(scale, when);
-      env.gain.exponentialRampToValueAtTime(0.001, when + spec.noiseMs / 1000);
-      noise.connect(band).connect(env).connect(master);
-      noise.start(when);
-      noise.stop(when + spec.noiseMs / 1000);
+      env.gain.setValueAtTime(peak, when);
+      env.gain.exponentialRampToValueAtTime(0.001, when + ms / 1000);
+      src.connect(env).connect(high);
+      src.start(when);
+      src.stop(when + ms / 1000);
+    };
+
+    const hit = (when, scale) => {
+      // 짝: 손가락·손바닥이 차례로 닿는 아주 짧은 터짐 몇 번, 마지막이 가장 세다
+      for (let b = 0; b < spec.bursts; b += 1) {
+        burst(when + (b * spec.burstGapMs) / 1000, spec.burstMs, scale * (b === spec.bursts - 1 ? 1 : 0.6));
+      }
+      // 꼬리: 마지막 터짐에서 짧게 줄어든다
+      const tailAt = when + ((spec.bursts - 1) * spec.burstGapMs) / 1000;
+      burst(tailAt, spec.tailMs, scale * 0.9);
 
       // 몸통: 낮은 사인파가 짧게 떨어진다
       const osc = ac.createOscillator();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(spec.thumpHz[0], when);
-      osc.frequency.exponentialRampToValueAtTime(spec.thumpHz[1], when + spec.thumpMs / 1000);
+      osc.frequency.setValueAtTime(spec.thumpHz[0], tailAt);
+      osc.frequency.exponentialRampToValueAtTime(spec.thumpHz[1], tailAt + spec.thumpMs / 1000);
       const body = ac.createGain();
-      body.gain.setValueAtTime(spec.thumpGain * scale, when);
-      body.gain.exponentialRampToValueAtTime(0.001, when + spec.thumpMs / 1000);
+      body.gain.setValueAtTime(spec.thumpGain * scale, tailAt);
+      body.gain.exponentialRampToValueAtTime(0.001, tailAt + spec.thumpMs / 1000);
       osc.connect(body).connect(master);
-      osc.start(when);
-      osc.stop(when + spec.thumpMs / 1000);
+      osc.start(tailAt);
+      osc.stop(tailAt + spec.thumpMs / 1000);
     };
 
     hit(at, 1);
     // 철썩: 방에 한 번 울린다
     for (let i = 1; i <= spec.echoes; i += 1) hit(at + 0.085 * i, 0.35 / i);
-    return (Math.max(spec.noiseMs, spec.thumpMs) + 85 * spec.echoes) / 1000;
+    const lead = (spec.bursts - 1) * spec.burstGapMs;
+    return (lead + Math.max(spec.tailMs, spec.thumpMs) + 85 * spec.echoes) / 1000;
   }
 
   window.SmashSound = {

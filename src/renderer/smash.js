@@ -1,11 +1,11 @@
 'use strict';
-// 앱이 ?lang=…&level=… 로 넘긴 언어와 세기(파일 수에 따라 tap·slap·wham)에 맞춘다.
+// 앱이 ?lang=…&level=… 로 넘긴 언어와 세기(파일 수에 따라 slap·wham)에 맞춘다.
 // 소리는 메인 창이 낸다(사용자 동작이 있었던 창이라 소리가 막히지 않는다).
 const params = new URLSearchParams(location.search);
 const en = params.get('lang') === 'en';
-const level = ['tap', 'slap', 'wham'].includes(params.get('level')) ? params.get('level') : 'slap';
+// 옛 세기 이름(tap)이나 모르는 값은 찰싹으로 본다
+const level = params.get('level') === 'wham' ? 'wham' : 'slap';
 const WORDS = {
-  tap: ['톡', 'TAP'],
   slap: ['찰싹!!', 'SMACK!!'],
   wham: ['철썩!!!', 'WHAM!!!'],
 };
