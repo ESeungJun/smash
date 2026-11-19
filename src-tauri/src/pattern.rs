@@ -23,6 +23,8 @@ use crate::organizer::{ext_of, is_opaque_dir, nfc, Skipper};
 const MAX_DEPTH: usize = 6;
 const MAX_FILES: usize = 8_000;
 const MAX_FOLDERS: usize = 600;
+/// 폴더 하나에서 보는 항목 수. 하위 폴더가 수만 개인 폴더에서 멈추지 않게.
+const MAX_ENTRIES: usize = 2_000;
 
 struct Folder {
     path: PathBuf,
@@ -71,8 +73,29 @@ pub fn tokens(name: &str) -> Vec<String> {
 }
 
 /// 폴더 이름의 낱말. 용도 낱말도 남긴다(사용자가 그 이름으로 폴더를 만들었으면 그게 분류다).
+/// 확장자·종류 이름(pdf, png, docs …)은 폴더 이름 낱말로 쓰지 않는다: `PDF/` 폴더 하나가 모든 PDF 를 끌어가지 않게.
 fn folder_words(name: &str) -> Vec<(String, bool)> {
-    split_words(&format!("{name}.d"), false).into_iter().map(|w| { let g = is_generic(&w); (w, g) }).collect()
+    const KIND_WORDS: &[&str] = &["docs", "documents", "files", "images", "image", "photos", "videos", "video", "audio", "music", "fonts", "font"];
+    split_words(&format!("{name}.d"), false)
+        .into_iter()
+        .filter(|w| !KIND_WORDS.contains(&w.as_str()) && !CATEGORIES.iter().any(|c| c.extensions.contains(&w.as_str())))
+        .map(|w| {
+            let g = is_generic(&w);
+            (w, g)
+        })
+        .collect()
+}
+
+/// 이름(확장자 뺀)에 폴더 낱말이 있는지. 영문은 낱말 경계로만 맞춘다(`work` 가 `homework` 를 끌어가지 않게).
+fn stem_has(stem: &str, word: &str) -> bool {
+    if !word.is_ascii() {
+        return name_has(stem, word);
+    }
+    stem.match_indices(word).any(|(i, _)| {
+        let before = stem[..i].chars().next_back();
+        let after = stem[i + word.len()..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_alphanumeric()) && !after.is_some_and(|c| c.is_ascii_alphanumeric())
+    })
 }
 
 fn split_words(name: &str, drop_generic: bool) -> Vec<String> {
@@ -88,12 +111,43 @@ fn split_words(name: &str, drop_generic: bool) -> Vec<String> {
     out
 }
 
+/// 자동 정리는 파일이 다 받아질 때까지 몇 초마다 다시 스캔한다. 그때마다 문서 폴더를 처음부터 훑지 않게 잠깐 들고 있는다.
+#[cfg(not(test))]
+const CACHE_SECS: u64 = 15;
+
 impl Index {
-    /// `root` 아래 폴더를 훑는다(깊이 4, 파일 8,000개, 폴더 600개까지). 숨김·건너뛰기 폴더, 앱 꾸러미, 개발 프로젝트,
+    /// `build` 와 같지만 같은 폴더·같은 제외 목록이면 잠깐(15초) 전에 만든 색인을 다시 쓴다. 시험에서는 늘 새로 만든다.
+    pub fn cached(root: &Path, skip: &Skipper, exclude: &[PathBuf]) -> std::sync::Arc<Index> {
+        #[cfg(test)]
+        {
+            std::sync::Arc::new(Index::build(root, skip, exclude))
+        }
+        #[cfg(not(test))]
+        {
+            use std::sync::{Arc, Mutex, OnceLock};
+            use std::time::{Duration, Instant};
+            type Slot = (PathBuf, Vec<PathBuf>, Instant, Arc<Index>);
+            static CACHE: OnceLock<Mutex<Vec<Slot>>> = OnceLock::new();
+            let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
+            let mut slots = cache.lock().unwrap_or_else(|e| e.into_inner());
+            slots.retain(|s| s.2.elapsed() < Duration::from_secs(CACHE_SECS));
+            if let Some(hit) = slots.iter().find(|s| s.0 == root && s.1 == exclude) {
+                return hit.3.clone();
+            }
+            let idx = Arc::new(Index::build(root, skip, exclude));
+            slots.push((root.to_path_buf(), exclude.to_vec(), Instant::now(), idx.clone()));
+            idx
+        }
+    }
+
+    /// `root` 아래 폴더를 훑는다(깊이 6, 파일 8,000개, 폴더 600개, 폴더마다 항목 2,000개까지). 숨김·건너뛰기 폴더, 앱 꾸러미, 개발 프로젝트,
     /// `exclude`(다른 정리 대상 폴더)는 들어가지 않는다. root 바로 아래 파일은 "아직 정리 안 된 것"이라 배우지 않는다.
     pub fn build(root: &Path, skip: &Skipper, exclude: &[PathBuf]) -> Index {
         let mut folders: Vec<Folder> = Vec::new();
         let mut seen_files = 0usize;
+        // 다른 정리 대상 폴더는 링크·대소문자가 달라도 빼도록 실제 경로로도 비교한다
+        let exclude_real: Vec<PathBuf> = exclude.iter().filter_map(|p| p.canonicalize().ok()).collect();
+        let excluded = |p: &Path| exclude.iter().any(|x| x == p) || p.canonicalize().is_ok_and(|r| exclude_real.contains(&r));
         let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
         while let Some((dir, depth)) = stack.pop() {
             let Ok(entries) = fs::read_dir(&dir) else { continue };
@@ -108,7 +162,10 @@ impl Index {
                 tree_cats: HashSet::new(),
                 tree_counts: HashMap::new(),
             };
-            for e in entries.flatten() {
+            // 이름순으로 보고 상한을 둔다: 상한에 닿아도 같은 폴더 상태면 같은 결과
+            let mut entries: Vec<fs::DirEntry> = entries.flatten().take(MAX_ENTRIES * 4).collect();
+            entries.sort_by_key(|e| e.file_name());
+            for e in entries.into_iter().take(MAX_ENTRIES) {
                 let name = e.file_name().to_string_lossy().into_owned();
                 let Ok(ft) = e.file_type() else { continue };
                 if skip.skip(&name) {
@@ -116,7 +173,7 @@ impl Index {
                 }
                 if ft.is_dir() {
                     let p = e.path();
-                    if depth < MAX_DEPTH && !is_opaque_dir(&p, &name) && !exclude.contains(&p) {
+                    if depth < MAX_DEPTH && !is_opaque_dir(&p, &name) && !excluded(&p) {
                         subdirs.push(p);
                     }
                 } else if ft.is_file() && depth > 0 && seen_files < MAX_FILES {
@@ -193,7 +250,8 @@ impl Index {
     /// 새 파일을 놓을 기존 폴더. `rule_dest` 는 규칙이 정한 목적지(색인 root 안이어야 한다).
     pub fn place(&self, name: &str, rule_dest: &Path) -> Option<Pick> {
         let ext = ext_of(name);
-        let lower = nfc(name).to_lowercase();
+        let stem = Path::new(name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| name.to_string());
+        let lower = nfc(&stem).to_lowercase();
         let inside_dest = |f: &Folder| f.path.starts_with(rule_dest);
         let candidates: Vec<&Folder> = self.folders.iter().filter(|f| f.depth > 0 && self.fits(f, &ext)).collect();
 
@@ -203,7 +261,7 @@ impl Index {
             .iter()
             .map(|f| {
                 let ok_generic = f.depth == 1 || inside_dest(f);
-                (*f, f.words.iter().filter(|(w, g)| (!g || ok_generic) && self.name_df.get(w).copied().unwrap_or(0) <= 1 && name_has(&lower, w)).count())
+                (*f, f.words.iter().filter(|(w, g)| (!g || ok_generic) && self.name_df.get(w).copied().unwrap_or(0) <= 1 && stem_has(&lower, w)).count())
             })
             .filter(|(_, n)| *n > 0)
             .collect();
@@ -264,7 +322,8 @@ impl Index {
             }
         }
         // 4. 규칙 목적지엔 하나도 없고, 맨 위 두 단계 폴더 중 한 곳에 80% 넘게 모여 있으면 그중 가장 안쪽
-        if dest_total == 0 {
+        // 규칙 목적지가 아직 없으면(처음 쓰는 사용자) 다른 폴더로 돌리지 않고 규칙대로 둔다
+        if dest_total == 0 && rule_dest.is_dir() {
             let all: usize = self.folders.iter().filter(|f| f.depth == 1).map(tree_n).sum();
             let best = self
                 .folders

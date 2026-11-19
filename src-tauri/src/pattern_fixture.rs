@@ -155,6 +155,26 @@ mod tests {
         assert_eq!(rows, demo_plan(&cfg));
     }
 
+    /// 리뷰 지적(#8): 확장자 이름 폴더가 모든 파일을 끌어가지 않고, 하위 폴더까지 정리해도 이미 넣어 둔 파일은 그대로
+    #[test]
+    fn kind_named_folder_and_recursive_keep_places() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_lang("ko");
+        let (cfg, _, docs) = build();
+        write(&docs.join("옛날/PDF/a.pdf"), "a", 30);
+        write(&docs.join("work/일정.pdf"), "w", 30);
+        let mut v = serde_json::to_value(&cfg).unwrap();
+        v["targets"][1]["recursive"] = json!(true);
+        let cfg = save_config_value(&v).unwrap();
+        let rows = demo_plan(&cfg);
+        let dest = |src: &str| rows.iter().find(|(a, _)| a == src).map(|(_, b)| b.split("  (").next().unwrap().to_string()).unwrap_or_else(|| "(없음)".into());
+        assert_eq!(dest("다운로드/2026_원천징수영수증.pdf"), "문서/세무/2026_원천징수영수증.pdf", "PDF 폴더가 가로채지 않는다");
+        assert_eq!(dest("다운로드/계약서.pdf"), "문서/자료/계약서.pdf");
+        for kept in ["문서/이력서/01_이력서/홍길동_이력서.pdf", "문서/웨딩/스튜디오_계약서.pdf", "문서/회사_에이컴퍼니/2026 연봉 계약서.pdf"] {
+            assert_eq!(dest(kept), "(없음)", "이미 넣어 둔 {kept} 는 옮기지 않는다");
+        }
+    }
+
     #[test]
     fn pattern_off_keeps_old_behavior_but_still_protects() {
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
