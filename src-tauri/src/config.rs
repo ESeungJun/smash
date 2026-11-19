@@ -271,6 +271,9 @@ pub struct Settings {
     /// 첫 실행 안내를 봤는지
     #[serde(default)]
     pub intro_seen: bool,
+    /// 기존 정리 패턴 따르기: 이미 만들어 둔 폴더 중 비슷한 파일이 있는 곳으로 보내고, 새 소분류 폴더는 만들지 않는다(#8)
+    #[serde(default = "yes")]
+    pub follow_pattern: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -346,6 +349,7 @@ pub fn default_config() -> Config {
             nag: true,
             weekly: true,
             intro_seen: false,
+            follow_pattern: true,
         },
     }
 }
@@ -439,6 +443,7 @@ pub fn normalize(cfg: &Value) -> Config {
         nag: bool_not_false(st.and_then(|s| s.get("nag"))),
         weekly: bool_not_false(st.and_then(|s| s.get("weekly"))),
         intro_seen: get_bool(st, "introSeen", false),
+        follow_pattern: bool_not_false(st.and_then(|s| s.get("followPattern"))),
     };
 
     let targets = match cfg.get("targets") {
