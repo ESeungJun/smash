@@ -309,7 +309,7 @@ fn overlay<'a>(app: &'a AppHandle, label: &str, url: String, on_load: impl Fn() 
 /// 파일 수에 따른 세기. smash.css 의 타임라인과 맞춘다.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Blow {
-    /// smash.html 에 넘기는 이름: tap(톡) · slap(찰싹!!) · wham(철썩!!!)
+    /// smash.html 에 넘기는 이름: slap(찰싹!!) · wham(철썩!!!)
     level: &'static str,
     /// 내리치는 순간(ms)과 효과 전체 길이(ms)
     hit_ms: u64,
@@ -318,10 +318,10 @@ struct Blow {
     shake: f64,
 }
 
-/// 1~5개는 손가락으로 톡, 6~50개는 찰싹, 그보다 많으면 철썩. 수를 모르면(전부 정리) 찰싹.
+/// 50개까지는 찰싹, 그보다 많으면 철썩. 수를 모르면(전부 정리) 찰싹.
+/// 몇 개만 치워도 약하게 하지 않는다: 자동 정리는 거의 늘 몇 개씩이라 약한 단계는 늘 약한 효과가 된다(#7).
 fn blow_for(count: Option<usize>) -> Blow {
     match count {
-        Some(n) if n <= 5 => Blow { level: "tap", hit_ms: 300, total_ms: 1000, shake: 0.0 },
         Some(n) if n > 50 => Blow { level: "wham", hit_ms: 800, total_ms: 2000, shake: 1.5 },
         _ => Blow { level: "slap", hit_ms: 800, total_ms: 2000, shake: 1.0 },
     }
@@ -1347,13 +1347,12 @@ mod tests {
 
     #[test]
     fn blow_scales_with_file_count() {
-        assert_eq!(blow_for(Some(1)).level, "tap");
-        assert_eq!(blow_for(Some(5)).level, "tap");
-        assert_eq!(blow_for(Some(6)).level, "slap");
+        assert_eq!(blow_for(Some(1)).level, "slap", "한 개만 치워도 찰싹 (#7)");
+        assert_eq!(blow_for(Some(5)).level, "slap");
         assert_eq!(blow_for(Some(50)).level, "slap");
         assert_eq!(blow_for(Some(51)).level, "wham");
         assert_eq!(blow_for(None).level, "slap");
-        assert_eq!(blow_for(Some(2)).shake, 0.0, "몇 개 안 되면 창을 흔들지 않는다");
+        assert_eq!(blow_for(Some(2)), blow_for(Some(20)), "몇 개여도 효과가 약해지지 않는다 (#7)");
         assert!(blow_for(Some(500)).shake > blow_for(Some(20)).shake);
         for n in [Some(1), Some(20), Some(500), None] {
             let b = blow_for(n);

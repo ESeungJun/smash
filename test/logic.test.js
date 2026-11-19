@@ -110,13 +110,15 @@ test('규칙 목적지 표기는 resolvePath 로 바꿀 수 없다: `..` 가 있
   assert.equal(L.destInsideTargets('../Archive', owner.path, [owner], '/Users/me', '/'), false);
 });
 
-test('타격음: 셀수록 크고 낮고 길다. 알림음보다 크지 않다', () => {
-  const [tap, slap, wham] = ['tap', 'slap', 'wham'].map(L.slapSpec);
-  assert.ok(tap.gain < slap.gain && slap.gain < wham.gain);
+test('타격음: 철썩이 찰싹보다 크고 낮고 길다. 알림음보다 크지 않다. 약한 단계는 없다(#7)', () => {
+  const [slap, wham] = ['slap', 'wham'].map(L.slapSpec);
+  assert.ok(slap.gain < wham.gain);
   assert.ok(wham.gain <= 0.5, '최대 음량 상한');
-  assert.ok(tap.bandHz > slap.bandHz && slap.bandHz > wham.bandHz);
-  assert.ok(tap.noiseMs < slap.noiseMs && slap.noiseMs < wham.noiseMs);
-  assert.ok(wham.noiseMs <= 200, '짧은 소리');
+  assert.ok(slap.gain >= 0.4, '찰싹도 충분히 크다');
+  assert.ok(slap.bandHz > wham.bandHz && slap.thumpHz[1] > wham.thumpHz[1]);
+  assert.ok(slap.tailMs < wham.tailMs && wham.tailMs <= 200, '짧은 소리');
+  assert.ok(slap.bursts >= 2, '짝: 짧은 터짐이 여러 번');
+  assert.deepEqual(L.slapSpec('tap'), slap, '옛 tap 은 찰싹으로');
   assert.deepEqual(L.slapSpec('nope'), slap);
 });
 
