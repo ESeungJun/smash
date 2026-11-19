@@ -66,6 +66,9 @@
     return { tops: [...tops.values()], trash };
   }
 
+  const protectedCount = (scan) => (scan.blocked || []).filter((it) => it.note === 'protected').length;
+  const outsideCount = (scan) => (scan.blocked || []).length - protectedCount(scan);
+
   function collectIds(node) {
     const ids = node.items.map((i) => i.id);
     for (const child of node.children.values()) ids.push(...collectIds(child));
@@ -171,7 +174,8 @@
       trash.length ? L(`휴지통 ${trash.length}개`, `${trash.length} to Trash`) : '',
       newDirs.size ? L(`새 폴더 ${newDirs.size}개`, `${newDirs.size} new folders`) : '',
       unmatched.length ? L(`규칙 밖 ${unmatched.length}개`, `${unmatched.length} unmatched`) : '',
-      scan.blocked?.length ? L(`옮길 수 없음 ${scan.blocked.length}개`, `${scan.blocked.length} can't move`) : '',
+      outsideCount(scan) ? L(`옮길 수 없음 ${outsideCount(scan)}개`, `${outsideCount(scan)} can't move`) : '',
+      protectedCount(scan) ? L(`보호 ${protectedCount(scan)}개`, `${protectedCount(scan)} protected`) : '',
     ]
       .filter(Boolean)
       .join(' · ');
@@ -234,9 +238,34 @@
 
   // 규칙에는 맞지만 목적지가 정리할 폴더 밖이라 옮길 수 없는 파일. 계획에 넣지 않고 이유와 고치는 길을 보여 준다.
   function renderBlocked() {
-    const blocked = state.scan?.blocked || [];
+    const all = state.scan?.blocked || [];
+    // 정리 대상이 git 저장소 안이면 경고만 한다(#8). 막지는 않는다.
+    const repoHtml = state.scan?.repo
+      ? `<div class="block"><div class="block-head"><div>
+        <div class="block-title">${L('개발 저장소 안의 폴더예요', 'This folder is inside a code repository')}</div>
+        <div class="block-sub">${L(`위쪽 폴더 ${esc(state.scan.repo)} 가 git 저장소예요. 여기 파일을 옮기면 프로젝트에 영향이 갈 수 있어요. 설정 파일·코드는 보호하지만, 그 밖의 파일은 규칙대로 옮겨요.`, `${esc(state.scan.repo)} above this folder is a git repository. Moving files here can affect the project. Config and code files stay protected; other files follow your rules.`)}</div>
+      </div></div></div>`
+      : '';
+    // 코드·프로젝트 파일이라 보호한 것은 따로 짧게 보여 준다(#8)
+    const kept = all.filter((it) => it.note === 'protected');
+    const blocked = all.filter((it) => it.note !== 'protected');
+    const keptHtml = kept.length
+      ? `<div class="block">
+    <div class="block-head">
+      <div>
+        <div class="block-title">${L('보호해서 그대로 둔 파일', 'Protected and left in place')}<span class="count">${kept.length}</span></div>
+        <div class="block-sub">${L('코드·프로젝트 설정 파일이나 개발 프로젝트 안 파일은 규칙에 맞아도 옮기지 않아요. 옮기면 프로젝트가 깨질 수 있어요.', "Code, project config files and files inside dev projects stay put even when a rule matches. Moving them can break the project.")}</div>
+      </div>
+    </div>
+    <ul class="rows">${kept
+        .slice(0, 8)
+        .map((it) => `<li class="plain-row"><span class="ficon">${ico('file')}</span><span class="fname" title="${esc(it.srcLabel)}">${esc(it.name)}</span><span class="dest">${esc(String(it.reason || '').replace(/^[^:：]*[:：]\s*/, ''))}</span></li>`)
+        .join('')}</ul>
+    ${kept.length > 8 ? `<div class="note">${L(`외 ${kept.length - 8}개`, `and ${kept.length - 8} more`)}</div>` : ''}
+  </div>`
+      : '';
     if (!blocked.length) {
-      $('#blocked').innerHTML = '';
+      $('#blocked').innerHTML = repoHtml + keptHtml;
       return;
     }
     const byDir = new Map();
@@ -265,7 +294,8 @@
       </div>`,
         )
         .join('')}
-  </div>`;
+  </div>${keptHtml}`;
+    if (repoHtml) $('#blocked').insertAdjacentHTML('afterbegin', repoHtml);
   }
 
   // 방금 정리에서 옮기지 못한 파일. 닫기 전까지 남아 있다.

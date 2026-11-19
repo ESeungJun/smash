@@ -17,9 +17,9 @@ use crate::lang::l;
 use crate::organizer::{ext_of, nfc};
 
 /// 이름 앞부분이 같아도 묶지 않는 흔한 단어
-const STOP_WORDS: &[&str] = &[
+pub(crate) const STOP_WORDS: &[&str] = &[
     "the", "a", "an", "new", "untitled", "image", "img", "file", "files", "document", "doc", "download", "copy", "final", "draft", "photo",
-    "video", "screen", "제목", "제목없음", "제목 없음", "새", "문서", "사본", "복사본", "이미지", "사진", "파일", "최종",
+    "video", "screen", "오전", "오후", "제목", "제목없음", "제목 없음", "새", "문서", "사본", "복사본", "이미지", "사진", "파일", "최종",
 ];
 const MIN_CLUSTER: usize = 3;
 /// 이름 비교에 쓰는 기존 하위 폴더 수 상한(폴더가 아주 많아도 느려지지 않게)
@@ -30,14 +30,14 @@ const MEDIA_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "tiff", "bmp", "raw", "dng", "cr2", "nef", "arw", "mp4", "mov", "avi", "mkv", "webm", "m4v",
 ];
 
-struct Purpose {
-    ko: &'static str,
-    en: &'static str,
-    words: &'static [&'static str],
+pub(crate) struct Purpose {
+    pub(crate) ko: &'static str,
+    pub(crate) en: &'static str,
+    pub(crate) words: &'static [&'static str],
 }
 
 /// 용도 단어. 위에서부터 처음 맞는 것. 단어는 소문자·NFC 로 비교한다.
-const PURPOSES: &[Purpose] = &[
+pub(crate) const PURPOSES: &[Purpose] = &[
     Purpose { ko: "화면 녹화", en: "Screen recordings", words: &["화면 기록", "화면 녹화", "screen recording", "screenrecording", "녹화"] },
     Purpose { ko: "스크린샷", en: "Screenshots", words: &["스크린샷", "screenshot", "screen shot", "화면 캡처", "캡처", "capture", "snip"] },
     Purpose { ko: "카카오톡", en: "KakaoTalk", words: &["kakaotalk", "카카오톡", "카톡"] },
@@ -85,7 +85,7 @@ fn is_camera_name(name: &str) -> bool {
 }
 
 /// 이름에 그 낱말이 들어 있는지. 영문·숫자 3글자 이하는 앞뒤가 글자가 아닐 때만(낱말 경계).
-fn name_has(name: &str, word: &str) -> bool {
+pub(crate) fn name_has(name: &str, word: &str) -> bool {
     if !(word.is_ascii() && word.len() <= 3) {
         return name.contains(word);
     }
@@ -180,7 +180,22 @@ fn time_clusters(files: &[GFile], idx: &[usize]) -> Vec<Vec<usize>> {
 }
 
 /// 파일마다 대분류 폴더 안 소분류(없으면 None). `existing` 은 목적지에 이미 있는 하위 폴더 이름들.
-pub fn subfolders(mode: &str, files: &[GFile], existing: &[String]) -> Vec<Option<String>> {
+/// `only_existing`: "auto" 에서 이미 있는 하위 폴더로만 나눈다(기존 정리 패턴 따르기, #8). 새 폴더를 지어내지 않아 결과를 예측할 수 있다.
+pub fn subfolders(mode: &str, files: &[GFile], existing: &[String], only_existing: bool) -> Vec<Option<String>> {
+    let mut out = subfolders_any(mode, files, existing);
+    if only_existing && mode == "auto" {
+        let have: Vec<String> = existing.iter().map(|e| lower(e)).collect();
+        for o in out.iter_mut() {
+            let top = o.as_deref().and_then(|s| s.split('/').next()).map(lower);
+            if !top.is_some_and(|t| have.contains(&t)) {
+                *o = None;
+            }
+        }
+    }
+    out
+}
+
+fn subfolders_any(mode: &str, files: &[GFile], existing: &[String]) -> Vec<Option<String>> {
     let mut out: Vec<Option<String>> = vec![None; files.len()];
     match mode {
         "month" => {
@@ -304,7 +319,7 @@ mod tests {
             f("lonely.png", base + 500.0 * H),           // 15 그대로
             f("2026 연봉 계약서.pdf", base),             // 16 용도: 계약서
         ];
-        let got = subfolders("auto", &files, &["엘든링".into(), "go".into(), "2026-11".into()]);
+        let got = subfolders("auto", &files, &["엘든링".into(), "go".into(), "2026-11".into()], false);
         let s = |i: usize| got[i].clone().unwrap_or_default();
         assert_eq!(s(0), "스크린샷");
         assert_eq!(s(1), "카카오톡");
@@ -317,7 +332,7 @@ mod tests {
         assert!(s(11).starts_with("20") && s(11) == s(14), "{}", s(11));
         assert_eq!(got[15], None);
         assert_eq!(s(16), "계약서");
-        let got = subfolders("auto", &[f("logo.png", base), f("go 대회.png", base)], &["go".into()]);
+        let got = subfolders("auto", &[f("logo.png", base), f("go 대회.png", base)], &["go".into()], false);
         assert_eq!(got[0].as_deref(), Some("로고·아이콘"), "go 폴더가 logo 를 끌어가지 않는다");
         assert_eq!(got[1].as_deref(), Some("go"));
     }
@@ -325,16 +340,29 @@ mod tests {
     #[test]
     fn none_and_month_modes() {
         let files = vec![f("a.png", 1_793_000_000_000.0)];
-        assert_eq!(subfolders("", &files, &[]), vec![None]);
-        assert!(subfolders("month", &files, &[])[0].as_deref().unwrap().starts_with("2026-"));
+        assert_eq!(subfolders("", &files, &[], false), vec![None]);
+        assert!(subfolders("month", &files, &[], false)[0].as_deref().unwrap().starts_with("2026-"));
+        assert!(subfolders("month", &files, &[], true)[0].is_some(), "연-월은 사용자가 고른 방식이라 새 폴더를 만든다");
     }
 
     #[test]
     fn small_prefix_groups_stay_loose() {
         let files = vec![f("report-final.pdf", 0.0), f("report-v2.pdf", 0.0), f("untitled 1.txt", 0.0), f("untitled 2.txt", 0.0), f("untitled 3.txt", 0.0)];
-        let got = subfolders("auto", &files, &[]);
+        let got = subfolders("auto", &files, &[], false);
         assert_eq!(got[0].as_deref(), Some(l("회의·보고서", "Meetings & reports").as_str()));
         assert!(got[2].is_none(), "흔한 단어(untitled)로는 묶지 않는다");
+    }
+
+    #[test]
+    fn only_existing_keeps_known_subfolders() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_lang("ko");
+        let files = vec![f("엘든링_보스.png", 0.0), f("스크린샷 1.png", 0.0), f("IMG_0001.jpg", 0.0)];
+        let got = subfolders("auto", &files, &["엘든링".into()], true);
+        assert_eq!(got[0].as_deref(), Some("엘든링"), "이미 있는 폴더는 쓴다");
+        assert_eq!(got[1], None, "없는 '스크린샷' 폴더를 새로 만들지 않는다");
+        assert_eq!(got[2], None, "카메라 폴더도 새로 만들지 않는다");
+        assert_eq!(subfolders("auto", &files, &["스크린샷".into()], true)[1].as_deref(), Some("스크린샷"));
     }
 
     #[test]

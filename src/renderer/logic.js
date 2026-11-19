@@ -105,15 +105,16 @@
   }
 
   /**
-   * 타격음 합성 값. 자산 파일 없이 Web Audio 로 만든다:
-   * 짧은 소음(손바닥이 닿는 "찰")을 대역 필터로 걸러 빠르게 줄이고, 낮은 사인파 한 번("싹"의 몸통)을 겹친다.
-   * 세기가 셀수록 크고, 낮고, 길다. 시스템 알림음을 넘지 않게 최대 음량을 0.5 아래로 둔다.
+   * 타격음 합성 값. 자산 파일 없이 Web Audio 로 만든다(sound.js).
+   * 손뼉·손바닥 "짝": 몇 ms 간격으로 짧은 소음이 여러 번 터지고(bursts) 마지막에 짧은 꼬리(tailMs)가 남는다.
+   * 소음은 고역 통과(highHz)로 둔탁함을 빼고 대역 필터(bandHz)로 손바닥 울림을 살린다. 낮은 사인파(thump)는 맞는 몸통.
+   * 철썩은 더 크고, 더 낮고, 꼬리가 길고, 방에 한 번 울린다. 시스템 알림음을 넘지 않게 최대 음량을 0.5 아래로 둔다.
+   * 옛 세기 이름(tap)이나 모르는 값은 찰싹으로 본다(#7: 몇 개만 치워도 약하게 하지 않는다).
    */
   function slapSpec(level) {
     const table = {
-      tap: { gain: 0.16, noiseMs: 45, bandHz: 3600, q: 1.4, thumpHz: [320, 180], thumpMs: 40, thumpGain: 0.1, echoes: 0 },
-      slap: { gain: 0.3, noiseMs: 110, bandHz: 2400, q: 0.9, thumpHz: [210, 80], thumpMs: 90, thumpGain: 0.32, echoes: 0 },
-      wham: { gain: 0.42, noiseMs: 170, bandHz: 1700, q: 0.7, thumpHz: [160, 48], thumpMs: 170, thumpGain: 0.46, echoes: 1 },
+      slap: { gain: 0.46, bursts: 3, burstGapMs: 9, burstMs: 6, tailMs: 120, highHz: 650, bandHz: 1800, q: 0.8, thumpHz: [190, 70], thumpMs: 60, thumpGain: 0.45, echoes: 0 },
+      wham: { gain: 0.5, bursts: 4, burstGapMs: 11, burstMs: 7, tailMs: 180, highHz: 420, bandHz: 1300, q: 0.6, thumpHz: [150, 45], thumpMs: 140, thumpGain: 0.6, echoes: 1 },
     };
     return table[level] || table.slap;
   }

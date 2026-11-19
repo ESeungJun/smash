@@ -29,12 +29,12 @@ const PACKAGE_EXTS: &[&str] = &[
     "lrdata", "lrlibrary", "aplibrary", "xcodeproj", "xcworkspace", "playground", "rtfd", "pages", "numbers", "key", "sparsebundle", "pkg", "mpkg",
 ];
 /// 이 파일이 들어 있으면 개발 프로젝트로 보고 안에 들어가지 않는다(파일을 빼면 프로젝트가 깨진다)
-const PROJECT_MARKERS: &[&str] = &[
+pub(crate) const PROJECT_MARKERS: &[&str] = &[
     ".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", "requirements.txt", "pom.xml", "build.gradle", "build.gradle.kts",
     "settings.gradle", "Gemfile", "composer.json", "CMakeLists.txt", "Makefile", ".project", "Podfile", "pubspec.yaml",
 ];
 /// 이 확장자의 파일이 들어 있어도 개발 프로젝트로 본다 (이름이 제각각이라 확장자로 본다: Foo.sln)
-const PROJECT_MARKER_EXTS: &[&str] = &["sln", "xcodeproj", "csproj"];
+pub(crate) const PROJECT_MARKER_EXTS: &[&str] = &["sln", "xcodeproj", "csproj"];
 const MAX_DEPTH: usize = 8;
 const MAX_SCAN_FILES: usize = 20_000;
 
@@ -83,10 +83,21 @@ pub struct Scan {
     pub root: String,
     pub items: Vec<Item>,
     pub unmatched: Vec<FileInfo>,
-    /// 규칙에는 맞지만 실행할 수 없는 항목(목적지가 정리 대상 밖). 계획에 넣지 않고 이유만 보여 준다.
+    /// 규칙에는 맞지만 실행할 수 없는 항목. 계획에 넣지 않고 이유만 보여 준다.
+    /// note "outside": 목적지가 정리 대상 밖 · "protected": 코드·프로젝트 파일이라 보호(#8)
     pub blocked: Vec<Item>,
     /// 파일이 너무 많아 일부만 봤다
     pub truncated: bool,
+    /// 정리 대상 폴더가 git 저장소의 하위 폴더면 그 저장소 위치(경고만 한다, #8)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+}
+
+/// 정리 대상 폴더의 위쪽 폴더 중 git 저장소가 있으면 그 위치. 홈 폴더 자체가 저장소(dotfiles 등)인 경우는 뺀다:
+/// 그걸 막으면 홈 아래 모든 폴더를 정리하지 못한다. 정리 대상 자체가 저장소인 경우는 protect 가 이미 막는다.
+pub fn enclosing_repo(root: &Path) -> Option<PathBuf> {
+    let home = crate::config::home();
+    root.ancestors().skip(1).take_while(|a| *a != home.as_path()).find(|a| a.join(".git").exists()).map(Path::to_path_buf)
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -440,7 +451,7 @@ pub fn effective_rules<'a>(cfg: &'a Config, target: &'a Target) -> Vec<(&'a Rule
     out
 }
 
-fn is_opaque_dir(dir: &Path, name: &str) -> bool {
+pub(crate) fn is_opaque_dir(dir: &Path, name: &str) -> bool {
     let ext = Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     OPAQUE_DIRS.contains(&name)
         || name.ends_with("_files")
@@ -562,9 +573,23 @@ pub fn scan_target_with(cfg: &Config, reference: Option<&str>, subfolders: bool)
     // 1. 파일마다 처음 맞는 규칙 (뒤에 있어 밀린 규칙 이름도 같이 모은다)
     let mut hit: Vec<Option<(&Rule, PathBuf, Vec<String>)>> = Vec::with_capacity(files.len());
     let mut unmatched = Vec::new();
+    let mut protected = Vec::new();
     for file in &files {
         let mut matching = rules.iter().filter(|(r, _)| match_file(r, file, now));
-        match matching.next() {
+        let first = matching.next();
+        // 코드·프로젝트 파일은 어떤 규칙으로도 옮기지 않는다(#8). 규칙이 그 코드 확장자를 직접 적었으면 사용자가 고른 것이라 둔다.
+        let explicit: &[String] = first.map(|(r, _)| r.matcher.extensions.as_slice()).unwrap_or(&[]);
+        if let Some(why) = crate::protect::check_with(Path::new(&file.path), &root, explicit, false) {
+            hit.push(None);
+            if let Some((rule, _)) = first {
+                let action = if rule.action == "trash" { "trash" } else { "move" };
+                let mut item = make_item(file, Plan { action, dest: String::new(), note: Some("protected"), duplicate_of: None }, Some(rule.id.clone()), why.text());
+                item.group_base = None;
+                protected.push(item);
+            }
+            continue;
+        }
+        match first {
             Some((rule, base)) => {
                 let dir = if rule.action == "trash" { PathBuf::new() } else { clean(&resolve_dest_dir(base, &rule.dest)) };
                 hit.push(Some((rule, dir, matching.take(3).map(|(r, _)| r.name.clone()).collect())));
@@ -575,6 +600,10 @@ pub fn scan_target_with(cfg: &Config, reference: Option<&str>, subfolders: bool)
             }
         }
     }
+
+    // 기존 정리 패턴(#8): 목적지가 들어 있는 정리 대상 폴더마다 한 번 색인한다
+    let follow = cfg.settings.follow_pattern;
+    let mut indexes: HashMap<PathBuf, std::sync::Arc<crate::pattern::Index>> = HashMap::new();
 
     // 2. 같은 규칙·같은 대분류 폴더로 가는 파일끼리 소분류
     let mut groups: HashMap<(String, PathBuf), Vec<usize>> = HashMap::new();
@@ -590,7 +619,7 @@ pub fn scan_target_with(cfg: &Config, reference: Option<&str>, subfolders: bool)
         let mode = hit[idx[0]].as_ref().map(|(r, _, _)| r.group.as_str()).unwrap_or("");
         let gfiles: Vec<crate::grouping::GFile> =
             idx.iter().map(|&i| crate::grouping::GFile { name: files[i].name.clone(), mtime_ms: files[i].mtime_ms }).collect();
-        for (k, s) in crate::grouping::subfolders(mode, &gfiles, &existing_subdirs(dir, &skip)).into_iter().enumerate() {
+        for (k, s) in crate::grouping::subfolders(mode, &gfiles, &existing_subdirs(dir, &skip), follow).into_iter().enumerate() {
             sub[idx[k]] = s.and_then(|s| crate::grouping::clean_folder(&s));
         }
     }
@@ -604,6 +633,7 @@ pub fn scan_target_with(cfg: &Config, reference: Option<&str>, subfolders: bool)
     for (i, file) in files.iter().enumerate() {
         let Some((rule, dir, also)) = &hit[i] else { continue };
         let src = Path::new(&file.path);
+        let mut why: Option<String> = None;
         let planned = if rule.action == "trash" {
             Some(Plan { action: "trash", dest: String::new(), note: None, duplicate_of: None })
         } else {
@@ -616,10 +646,30 @@ pub fn scan_target_with(cfg: &Config, reference: Option<&str>, subfolders: bool)
             if already && rule.action == "move" {
                 continue;
             }
-            let dest_dir = match &sub[i] {
+            // 패턴 따르기를 켰으면, 패턴을 배우는 폴더(보통 문서) 안 하위 폴더에 이미 넣어 둔 파일은 그 자리가 사용자의 분류다.
+            // 하위 폴더까지 정리를 켜도 풀지 않는다. 다운로드 하위 폴더처럼 패턴 밖에 있는 파일은 그대로 정리한다.
+            if follow && rule.action == "move" {
+                let in_pattern = pattern_root(cfg, dir).is_some_and(|pr| src.parent().is_some_and(|p| { let p = clean(p); p != pr && is_inside(&p, &pr) }));
+                if in_pattern {
+                    continue;
+                }
+            }
+            let mut dest_dir = match &sub[i] {
                 Some(s) => dir.join(s),
                 None => dir.clone(),
             };
+            if follow && rule.action == "move" {
+                if let Some(idx_root) = pattern_root(cfg, dir) {
+                    let idx = indexes.entry(idx_root.clone()).or_insert_with(|| {
+                        let others: Vec<PathBuf> = target_roots(cfg).into_iter().filter(|r| *r != idx_root).collect();
+                        crate::pattern::Index::cached(&idx_root, &skip, &others)
+                    });
+                    if let Some(pick) = idx.place(&file.name, dir) {
+                        dest_dir = pick.dir;
+                        why = Some(pick.why);
+                    }
+                }
+            }
             // 실행 단계는 정리 대상 밖으로 옮기지 않는다. 여기서 미리 걸러 이유를 보여 준다.
             if !within_roots(cfg, &dest_dir) {
                 let dest = dest_dir.join(&file.name).to_string_lossy().into_owned();
@@ -631,15 +681,27 @@ pub fn scan_target_with(cfg: &Config, reference: Option<&str>, subfolders: bool)
             plan_move(src, &dest_dir, &mut reserved)
         };
         if let Some(p) = planned {
-            let mut item = make_item(file, p, Some(rule.id.clone()), rule.name.clone());
-            if rule.action == "move" {
+            let reason = match &why {
+                Some(w) => format!("{} · {w}", rule.name),
+                None => rule.name.clone(),
+            };
+            let mut item = make_item(file, p, Some(rule.id.clone()), reason);
+            // 패턴으로 기존 폴더를 고른 항목은 내용 묶기(regroup)가 새 소분류로 다시 보내지 않게 대분류를 남기지 않는다
+            if rule.action == "move" && why.is_none() {
                 item.group_base = Some(dir.to_string_lossy().into_owned());
             }
             item.also_matched = also.clone();
             items.push(item);
         }
     }
-    Ok(Scan { target_id: target.id.clone(), root: root.to_string_lossy().into_owned(), items, unmatched, blocked, truncated })
+    blocked.extend(protected);
+    let repo = enclosing_repo(&root).map(|r| r.to_string_lossy().into_owned());
+    Ok(Scan { target_id: target.id.clone(), root: root.to_string_lossy().into_owned(), items, unmatched, blocked, truncated, repo })
+}
+
+/// 기존 패턴을 배울 폴더: 목적지를 품은 정리 대상 폴더 중 가장 안쪽
+fn pattern_root(cfg: &Config, dest_dir: &Path) -> Option<PathBuf> {
+    target_roots(cfg).into_iter().filter(|r| is_inside(dest_dir, r) || dest_dir == r.as_path()).max_by_key(|r| r.components().count())
 }
 
 /// 미리보기 계획의 일부 항목을 새 소분류로 옮겨 다시 계획한다(이미지 내용으로 묶기 결과).
@@ -699,6 +761,15 @@ pub fn missing_dirs(dest: &Path) -> Vec<PathBuf> {
 }
 
 /// AI·MCP 가 만든 이동 목록을 검증해서 실행 가능한 계획으로 바꾼다.
+/// 파일을 품은 가장 안쪽 정리 대상 폴더
+fn owner_root(cfg: &Config, p: &Path) -> Option<PathBuf> {
+    target_roots(cfg).into_iter().filter(|r| is_inside(p, r)).max_by_key(|r| r.components().count())
+}
+
+fn in_project_dest(cfg: &Config, dest: &Path) -> bool {
+    owner_root(cfg, dest).is_some_and(|r| crate::protect::dest_in_project(dest, &r))
+}
+
 pub fn plan_from_moves(cfg: &Config, moves: Vec<MoveReq>) -> Planned {
     let mut reserved = HashSet::new();
     let mut items = Vec::new();
@@ -723,6 +794,12 @@ pub fn plan_from_moves(cfg: &Config, moves: Vec<MoveReq>) -> Planned {
             fail(l("설정한 정리 대상 폴더 밖의 파일입니다", "The file is outside the folders you set up"));
             continue;
         }
+        // 코드·프로젝트 파일은 직접 정한 이동(AI·MCP)으로도 옮기지 않는다(#8)
+        let owner = owner_root(cfg, &src).unwrap_or_default();
+        if let Some(why) = crate::protect::check(&src, &owner, &[]) {
+            fail(why.text());
+            continue;
+        }
         let file = FileInfo {
             name: src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             path: src.to_string_lossy().into_owned(),
@@ -738,6 +815,11 @@ pub fn plan_from_moves(cfg: &Config, moves: Vec<MoveReq>) -> Planned {
         let dest_dir = resolve_dest_dir(&base, m.dest_folder.as_deref().unwrap_or(""));
         if !within_roots(cfg, &dest_dir) {
             fail(l("목적지가 정리 대상 폴더 밖입니다", "The destination is outside the folders you set up"));
+            continue;
+        }
+        // 개발 프로젝트 폴더 안으로도 넣지 않는다(빌드 설정에 섞여 들어가지 않게)
+        if in_project_dest(cfg, &dest_dir) {
+            fail(l("보호됨: 목적지가 개발 프로젝트 안입니다", "Protected: the destination is inside a dev project"));
             continue;
         }
         match plan_move(&src, &dest_dir, &mut reserved) {
@@ -814,6 +896,15 @@ pub fn apply_into(cfg: &Config, items: Vec<Item>, rec: &mut Recorder) -> Vec<App
             // 원본이 폴더 바로가기 너머(정리 대상 밖)에 있으면 건드리지 않는다
             if !src.parent().is_some_and(|d| really_inside_any_root(cfg, d)) {
                 return Err(outside_file());
+            }
+            // 실행 직전에 보호를 다시 본다(#8): 화면이 넘긴 항목이나, 계획 뒤에 프로젝트가 된 폴더.
+            // 코드 확장자는 규칙이 직접 고른 것일 수 있어 계획 단계에서만 본다.
+            let owner = owner_root(cfg, &src).unwrap_or_default();
+            if let Some(why) = crate::protect::check(&src, &owner, &[]).filter(|r| *r != crate::protect::Reason::Code) {
+                return Err(why.text());
+            }
+            if item.action != "trash" && in_project_dest(cfg, &abs(&item.dest).parent().map(Path::to_path_buf).unwrap_or_default()) {
+                return Err(l("보호됨: 목적지가 개발 프로젝트 안입니다", "Protected: the destination is inside a dev project"));
             }
             let size = st.len();
             // 중복이라 버리기로 한 파일은 원본이 아직 그대로 있을 때만 버린다. 아니면 원본 자리로 옮긴다.
@@ -919,7 +1010,8 @@ pub fn folder_tree(cfg: &Config, depth: usize) -> Vec<String> {
             .flatten()
             .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| !skip.skip(n) && !n.ends_with(".app") && !n.ends_with("_files"))
+            // 개발 프로젝트·꾸러미 폴더는 목적지 후보에서 뺀다(스캔·패턴 색인과 같은 기준, #8)
+            .filter(|n| !skip.skip(n) && !n.ends_with(".app") && !n.ends_with("_files") && !is_opaque_dir(&dir.join(n), n))
             .collect();
         names.sort();
         for n in names {
@@ -1306,6 +1398,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(sb.join("leave-target.pdf"), inbox.join("link.pdf")).unwrap();
         let cfg = save_config_value(&json!({
+            "settings": { "followPattern": false },
             "targets": [{ "id": "inbox", "path": inbox, "recursive": true, "rules": [
                 { "name": "문서", "match": { "extensions": ["pdf", "download", "crdownload", "part", "tmp", "sln"] }, "action": "move", "dest": "문서" }
             ]}],
@@ -1640,12 +1733,13 @@ mod tests {
         write(&docs.join("문서").join("2025").join("old.pdf"), "o", 0);
         write(&docs.join("문서").join("2024 회사").join("영수증_10월.pdf"), "r", 0);
         write(&dl.join("받은 계약서.pdf"), "c", 0);
+        // 기존 정리 패턴 따르기를 끈 옛 동작: 자동 소분류가 용도 폴더를 새로 만든다 (켠 동작은 pattern_fixture 가 본다)
         let cfg = save_config_value(&json!({ "targets": [
             { "id": "docs", "path": docs, "recursive": true, "rules": [
                 { "name": "문서", "match": { "extensions": ["pdf"] }, "action": "move", "dest": "문서", "group": "auto" }
             ]},
             { "id": "dl", "path": dl, "link": "docs", "rules": [] }
-        ]}))
+        ], "settings": { "followPattern": false }}))
         .unwrap();
         let s = |p: PathBuf| p.to_string_lossy().into_owned();
         let scan = scan_target(&cfg, Some("docs")).unwrap();
