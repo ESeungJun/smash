@@ -239,6 +239,13 @@
   // 규칙에는 맞지만 목적지가 정리할 폴더 밖이라 옮길 수 없는 파일. 계획에 넣지 않고 이유와 고치는 길을 보여 준다.
   function renderBlocked() {
     const all = state.scan?.blocked || [];
+    // 정리 대상이 git 저장소 안이면 경고만 한다(#8). 막지는 않는다.
+    const repoHtml = state.scan?.repo
+      ? `<div class="block"><div class="block-head"><div>
+        <div class="block-title">${L('개발 저장소 안의 폴더예요', 'This folder is inside a code repository')}</div>
+        <div class="block-sub">${L(`위쪽 폴더 ${esc(state.scan.repo)} 가 git 저장소예요. 여기 파일을 옮기면 프로젝트에 영향이 갈 수 있어요. 설정 파일·코드는 보호하지만, 그 밖의 파일은 규칙대로 옮겨요.`, `${esc(state.scan.repo)} above this folder is a git repository. Moving files here can affect the project. Config and code files stay protected; other files follow your rules.`)}</div>
+      </div></div></div>`
+      : '';
     // 코드·프로젝트 파일이라 보호한 것은 따로 짧게 보여 준다(#8)
     const kept = all.filter((it) => it.note === 'protected');
     const blocked = all.filter((it) => it.note !== 'protected');
@@ -258,7 +265,7 @@
   </div>`
       : '';
     if (!blocked.length) {
-      $('#blocked').innerHTML = keptHtml;
+      $('#blocked').innerHTML = repoHtml + keptHtml;
       return;
     }
     const byDir = new Map();
@@ -288,6 +295,7 @@
         )
         .join('')}
   </div>${keptHtml}`;
+    if (repoHtml) $('#blocked').insertAdjacentHTML('afterbegin', repoHtml);
   }
 
   // 방금 정리에서 옮기지 못한 파일. 닫기 전까지 남아 있다.

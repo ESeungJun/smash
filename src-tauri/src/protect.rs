@@ -167,6 +167,16 @@ mod tests {
     }
 
     #[test]
+    fn warns_when_target_sits_inside_a_repo() {
+        let repo = sandbox().join("protect-repo");
+        let _ = std::fs::remove_dir_all(&repo);
+        write(&repo.join(".git/HEAD"), "x", 0);
+        write(&repo.join("assets/a.png"), "x", 0);
+        assert_eq!(crate::organizer::enclosing_repo(&repo.join("assets")), Some(repo.clone()));
+        assert_eq!(crate::organizer::enclosing_repo(&sandbox().join("protect-dest")), None);
+    }
+
+    #[test]
     fn root_is_a_project_only_with_git() {
         let root = sandbox().join("protect-proj");
         let _ = std::fs::remove_dir_all(&root);

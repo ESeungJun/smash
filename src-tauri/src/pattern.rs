@@ -195,6 +195,7 @@ impl Index {
             }
         }
         // 하위 폴더까지 합친 종류: 깊은 폴더부터 위로 올린다
+        let pos: HashMap<PathBuf, usize> = folders.iter().enumerate().map(|(i, f)| (f.path.clone(), i)).collect();
         let mut order: Vec<usize> = (0..folders.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(folders[i].depth));
         for i in order {
@@ -207,8 +208,9 @@ impl Index {
             let (exts, cats): (Vec<String>, Vec<&'static str>) =
                 (folders[i].tree_exts.iter().cloned().collect(), folders[i].tree_exts.iter().filter_map(|e| category_of(e)).collect());
             folders[i].tree_cats.extend(cats.iter().copied());
-            if let Some(parent) = folders[i].path.parent().map(Path::to_path_buf) {
-                if let Some(p) = folders.iter_mut().find(|f| f.path == parent) {
+            if let Some(&pi) = folders[i].path.parent().and_then(|parent| pos.get(parent)) {
+                {
+                    let p = &mut folders[pi];
                     p.tree_exts.extend(exts);
                     p.tree_cats.extend(cats);
                     for (e, n) in counts {
@@ -225,7 +227,8 @@ impl Index {
             }
             // 조상 폴더가 같은 낱말을 이름에 가지면 한 갈래로 본다 (이력서/01_이력서 는 하나)
             for (w, _) in &f.words {
-                let ancestor_has = folders.iter().any(|a| a.path != f.path && f.path.starts_with(&a.path) && a.words.iter().any(|(x, _)| x == w));
+                // 조상은 경로 색인으로 바로 찾는다(폴더 수의 제곱으로 훑지 않게)
+                let ancestor_has = f.path.ancestors().skip(1).filter_map(|a| pos.get(a)).any(|&ai| folders[ai].words.iter().any(|(x, _)| x == w));
                 if !ancestor_has {
                     *name_df.entry(w.clone()).or_default() += 1;
                 }
