@@ -541,13 +541,10 @@ fn show_nag(app: &AppHandle, title: String, sub: String, action: Option<NagActio
     }
 }
 
-/// 자동 정리 뒤 배너 제목. 치운 양에 따라 말이 달라진다.
-fn auto_title(count: usize) -> String {
-    match count {
-        0..=4 => l("엄마가 또 치웠다", "Mom tidied up again"),
-        5..=19 => l("으이구!! 폴더 청소 좀 하랬지!!", "Ugh!! Didn’t I tell you to clean your folders!!"),
-        _ => l("이게 다 뭐니", "What is all this?"),
-    }
+/// 자동 정리 뒤 배너 제목. 몇 개를 치웠든 원래 멘트 하나로 간다(#9, 사용자 요청으로 파일 수별 문구를 되돌림).
+/// 몇 개 치웠는지는 아래 줄(sub)이 알려 준다.
+fn auto_title(_count: usize) -> String {
+    l("으이구!! 폴더 청소 좀 하랬지!!", "Ugh!! Didn’t I tell you to clean your folders!!")
 }
 
 fn on_auto_run(app: &AppHandle, target_id: &str, result: &Applied) {
@@ -1337,6 +1334,16 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 자동 정리 배너 제목은 몇 개를 치웠든 원래 멘트 하나(#9)
+    #[test]
+    fn auto_title_is_the_original_line() {
+        let _g = crate::test_util::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::lang::set_lang("ko");
+        for n in [1, 3, 5, 19, 20, 500] {
+            assert_eq!(auto_title(n), "으이구!! 폴더 청소 좀 하랬지!!", "{n}개");
+        }
+    }
 
     #[test]
     fn tidied_folder_picks_common_parent() {
