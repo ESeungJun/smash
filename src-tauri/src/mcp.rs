@@ -22,12 +22,12 @@ fn tools() -> Value {
         },
         {
             "name": "scan_folder",
-            "description": "정리 대상 폴더를 스캔해 규칙에 따른 정리 계획(plan)과 규칙에 안 걸린 파일(unmatched), 옮길 수 있는 폴더 목록(folders)을 돌려준다. 파일은 아직 움직이지 않는다. unmatched 파일은 이름을 보고 folders 중 알맞은 곳을 골라 plan_moves로 계획에 더하면 된다. blocked는 규칙의 목적지가 정리 대상 폴더 밖이라 실행할 수 없는 항목이다.",
+            "description": "정리 대상 폴더를 스캔해 규칙에 따른 정리 계획(plan)과 규칙에 안 걸린 파일(unmatched), 옮길 수 있는 폴더 목록(folders)을 돌려준다. 파일은 아직 움직이지 않는다. unmatched 파일은 이름을 보고 folders 중 비슷한 파일이 이미 있는 폴더를 골라 plan_moves로 계획에 더한다. 사용자가 이미 나눠 둔 폴더 구조를 따르고, 사용자가 원하지 않으면 새 폴더를 만들지 않는다. blocked는 실행할 수 없는 항목이다(note=outside: 목적지가 정리 대상 폴더 밖, note=protected: 코드·프로젝트 파일이라 보호). 코드·설정 파일과 개발 프로젝트 안 파일은 옮기지 않는다.",
             "inputSchema": { "type": "object", "properties": { "target": { "type": "string", "description": "폴더 id(예: downloads) 또는 경로(예: ~/Downloads). 생략하면 첫 번째 폴더." } } }
         },
         {
             "name": "plan_moves",
-            "description": "직접 정한 이동을 검증해 계획 항목(id 포함)으로 만든다. 파일은 아직 움직이지 않는다. 정리 대상 폴더 밖의 파일·목적지는 rejected로 돌려준다. 돌려받은 plan을 사용자에게 보여 주고 동의를 받은 뒤 그 id를 apply_plan에 넘긴다.",
+            "description": "직접 정한 이동을 검증해 계획 항목(id 포함)으로 만든다. 파일은 아직 움직이지 않는다. 정리 대상 폴더 밖의 파일·목적지와 코드·프로젝트 파일(소스 코드, package.json 같은 설정, 개발 프로젝트 안 파일)은 rejected로 돌려준다. 목적지는 비슷한 파일이 이미 있는 기존 폴더를 우선한다. 돌려받은 plan을 사용자에게 보여 주고 동의를 받은 뒤 그 id를 apply_plan에 넘긴다.",
             "inputSchema": { "type": "object", "properties": {
                 "moves": { "type": "array", "items": { "type": "object", "properties": {
                     "src": { "type": "string", "description": "옮길 파일 경로" },

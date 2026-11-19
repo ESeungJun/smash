@@ -100,6 +100,7 @@
         <select id="auto-delay">${delays.map(([v, l]) => `<option value="${v}" ${st.autoDelaySec === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="setting-row"><div><b>${L('정리할 때 등짝 스매시 효과', 'Smash effect when tidying')}</b><div class="muted">${L('정리하기를 누르면 손바닥이 "찰싹!!" 내리쳐요. 자동 정리 때는 안 나와요', 'A palm comes down with a "SMACK!!" when you press tidy. Not shown for auto-tidy')}</div></div>${switchHtml('id="set-smash"', st.smash)}</div>
       <div class="setting-row"><div><b>${L('정리할 때 소리', 'Sound when tidying')}</b><div class="muted">${L('손바닥이 닿는 순간 "찰싹" 소리가 나요. 파일이 많을수록 세게 쳐요. 자동 정리 때는 안 나요', 'A smack sound at the moment of impact, harder the more files there are. Silent for auto-tidy')}</div></div>${switchHtml('id="set-sound"', st.sound !== false)}</div>
+      <div class="setting-row"><div><b>${L('기존 정리 패턴 따르기', 'Follow how my folders are already organized')}</b><div class="muted">${L('이미 만들어 둔 폴더 중 비슷한 파일이 있는 곳으로 보내고, 새 소분류 폴더는 만들지 않아요. 끄면 규칙 목적지와 자동 소분류대로 가요. 코드·프로젝트 파일 보호는 늘 켜져 있어요', 'Sends files to the folder you already use for similar files and never invents new subfolders. Off: rule destination plus auto subfolders. Code and project files are always protected')}</div></div>${switchHtml('id="set-pattern"', st.followPattern !== false)}</div>
       <div class="setting-row"><div><b>${L('쌓이면 잔소리하기', 'Nag me when files pile up')}</b><div class="muted">${L('자동 정리를 안 켠 폴더에 치울 파일이 20개·60개·150개 쌓이면 배너로 한 번씩 알려요. 폴더마다 하루 한 번까지', 'When a folder without auto-tidy piles up 20, 60 or 150 files to tidy, a banner tells you once. At most once a day per folder')}</div></div>${switchHtml('id="set-nag"', st.nag !== false)}</div>
       <div class="setting-row"><div><b>${L('일요일 저녁 주간 성적표', 'Weekly report on Sunday evening')}</b><div class="muted">${L('이번 주에 몇 개 치웠는지 배너로 한 번 알려요', 'One banner with how much was tidied this week')}</div></div>${switchHtml('id="set-weekly"', st.weekly !== false)}</div>
       <div class="setting-row"><div><b>${L('정리한 뒤 폴더 열기', 'Open the folder afterwards')}</b><div class="muted">${L(
@@ -305,7 +306,7 @@
   }
 
   // 켜고 끄기만 하는 설정 스위치: 요소 id → settings 키
-  const TOGGLES = { 'set-notify': 'notify', 'set-login': 'openAtLogin', 'set-smash': 'smash', 'set-open': 'openAfter', 'set-sound': 'sound', 'set-nag': 'nag', 'set-weekly': 'weekly' };
+  const TOGGLES = { 'set-notify': 'notify', 'set-login': 'openAtLogin', 'set-smash': 'smash', 'set-open': 'openAfter', 'set-sound': 'sound', 'set-nag': 'nag', 'set-weekly': 'weekly', 'set-pattern': 'followPattern' };
   const isToggle = (el) => !!TOGGLES[el.id];
 
   function setToggle(el) {

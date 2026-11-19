@@ -9,10 +9,14 @@ pub mod history;
 pub mod lang;
 pub mod mcp;
 pub mod organizer;
+pub mod pattern;
+pub mod protect;
 pub mod thumbs;
 pub mod trash;
 pub mod watcher;
 
+#[cfg(test)]
+mod pattern_fixture;
 #[cfg(test)]
 mod test_util;
 
