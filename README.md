@@ -43,6 +43,10 @@ and works with the Claude you already have signed in on your computer, with no A
 - **Say it instead** — write "move PDFs with '계약서' in the name to Documents/계약서" and Claude fills in the rule.
 - **Documents-first defaults** — Downloads is sorted into `Documents/Images`, `Media`, `Files` and `Dev Resources` out of the box
   (`사진·이미지`, `미디어`, `자료` and `개발리소스` when the app runs in Korean). Installers received more than 7 days ago go to the Trash.
+- **Follows how you already sort** — before using a rule's destination it looks at the folders you already made.
+  A file goes where its name matches a folder, where files with the same distinctive words already sit, or where that file type is collected
+  (`VOC Report 3.csv` joins `VOC Report 1·2` in your work folder, `.svg` joins your icon folder). With no clear evidence it uses the rule's folder,
+  and auto subfolders only reuse folders that already exist. The preview says why. Turn it off in settings.
 - **Auto-tidy** — turn it on for a folder and new files are sorted once they finish downloading
   (the size has to stay the same twice). It keeps watching from the menu bar (notification area on Windows) after you close the window.
   When it's done, a banner drops in at the top of the screen: "으이구!! 폴더 청소 좀 하랬지!!" (roughly "Ugh!! Didn't I tell you to clean your folders!!"). Click it to open the folder.
@@ -54,6 +58,7 @@ and works with the Claude you already have signed in on your computer, with no A
   - Nothing is deleted for good; it only goes to the system Trash.
   - Never overwrites: a file with the same name gets ` (2)`. Identical files are treated as duplicates and go to the Trash.
   - Hidden files, files still downloading and folders (git repositories included) are left alone.
+  - Code and project files (source code, `package.json`, `.env`, `docker-compose.yml`, anything inside a dev project) are never moved, by rules, Claude or MCP.
   - Files never move outside the folders you've set up, not even through a symlinked folder. Rules pointing outside are listed separately in the preview instead of failing later.
   - History is written before each move, so a run that gets cut off can still be undone. If history can't be written, nothing moves.
   - Korean names match whether macOS stores them composed or decomposed (NFC/NFD), so "스크린샷" rules actually catch screenshots.
