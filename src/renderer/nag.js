@@ -5,6 +5,9 @@ if (params.get('lang') === 'en') document.documentElement.lang = 'en';
 const title = params.get('title') || (params.get('lang') === 'en' ? 'Ugh!! Didn’t I tell you to clean your folders!!' : '');
 if (title) document.getElementById('title').textContent = title;
 document.getElementById('sub').textContent = params.get('sub') || '';
+// 옮긴 곳 한 줄(#10). 자동 정리 뒤에만 온다
+const dest = params.get('dest');
+if (dest) Object.assign(document.getElementById('dest'), { textContent: dest, hidden: false });
 
 const banner = document.querySelector('.banner');
 const invoke = (cmd) => window.__TAURI__?.core.invoke(cmd);

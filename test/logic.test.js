@@ -150,3 +150,28 @@ test('실패 목록과 크기 표기', () => {
   assert.deepEqual(L.failures(undefined), []);
   assert.deepEqual([1.2e9, 3.4e6, 10].map(L.fmtBytes), ['1.2GB', '3MB', '1KB']);
 });
+
+test('옮긴 파일 목록: 실행을 파일 한 줄씩 펴고, 이름·자리로 찾는다(#10)', () => {
+  const runs = [
+    {
+      id: 'r2',
+      at: '2026-11-25T09:00:00Z',
+      source: 'auto',
+      ops: [
+        { type: 'move', from: '/h/Downloads/견적서.pdf', to: '/h/Documents/웨딩/견적서.pdf', name: '견적서.pdf', fromLabel: '~/Downloads/견적서.pdf', toLabel: '~/Documents/웨딩/견적서.pdf', toDirLabel: '~/Documents/웨딩' },
+        { type: 'trash', from: '/h/Downloads/Setup.dmg', name: 'Setup.dmg', fromLabel: '~/Downloads/Setup.dmg', toLabel: '' },
+      ],
+    },
+    { id: 'r1', at: '2026-11-20T09:00:00Z', source: 'app', ops: [{ type: 'move', from: '/h/Downloads/a.png', to: '/h/Documents/사진/a.png', fromLabel: '~/Downloads/a.png', toLabel: '~/Documents/사진/a.png', undone: true }] },
+  ];
+  const all = L.movedFiles(runs);
+  assert.deepEqual(all.map((r) => r.name), ['견적서.pdf', 'Setup.dmg', 'a.png'], '실행 순서(최근 먼저) 그대로, 이름이 없으면 경로에서');
+  assert.equal(all[2].undone, true);
+  assert.equal(all[0].toDirLabel, '~/Documents/웨딩');
+  assert.deepEqual(L.movedFiles(runs, '웨딩').map((r) => r.name), ['견적서.pdf'], '옮긴 자리로 찾기');
+  assert.deepEqual(L.movedFiles(runs, 'SETUP').map((r) => r.name), ['Setup.dmg'], '대소문자 무시');
+  assert.deepEqual(L.movedFiles(runs, '견적서'.normalize('NFD')).map((r) => r.name), ['견적서.pdf'], '자모 분리 한글도 찾음');
+  assert.deepEqual(L.movedFiles(runs, 'documents 사진').map((r) => r.name), ['a.png'], '낱말 모두 들어가야');
+  assert.deepEqual(L.movedFiles(runs, '없는말'), []);
+  assert.deepEqual(L.movedFiles(null), []);
+});
