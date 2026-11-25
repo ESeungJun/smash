@@ -29,6 +29,11 @@
         return History.doUndo(el.dataset.undoRun);
       }
       if (el.dataset.addTargetPath) return App.addTargetPath(el.dataset.addTargetPath);
+      if (el.dataset.historyView) return History.setView(el.dataset.historyView);
+      if (el.dataset.showPath) {
+        e.preventDefault(); // 줄(details)이 같이 접히지 않게
+        return tidy.showInFolder(el.dataset.showPath).catch((err) => toast(L(`열지 못했어요: ${err.message}`, `Couldn't open it: ${err.message}`)));
+      }
       if (el.dataset.collapse) return Preview.toggleCollapse(el.dataset.collapse);
       if (state.draft && Rules.handleDraftClick(el)) return;
       const t = currentTarget();
@@ -86,7 +91,10 @@
       if (Rules.isTagInput(el)) return Rules.tagKeydown(e);
     });
 
-    document.addEventListener('input', (e) => Rules.draftInput(e));
+    document.addEventListener('input', (e) => {
+      if (e.target.id === 'history-q') return History.search(e.target.value);
+      return Rules.draftInput(e);
+    });
 
     document.addEventListener('change', async (e) => {
       const el = e.target;

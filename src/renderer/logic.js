@@ -149,7 +149,39 @@
     return `${Math.max(1, Math.round(n / 1e3))}KB`;
   }
 
+  /**
+   * 기록 탭 "옮긴 파일" 보기(#10): 정리 실행들을 파일 한 줄씩 펴서 최근 것부터 돌려준다.
+   * query 는 이름·원래 자리·옮긴 자리에서 찾는다(대소문자·한글 자모 분리(NFD) 무시, 띄어쓰기로 나눈 낱말 모두 들어가야 함).
+   */
+  function movedFiles(runs, query = '') {
+    const norm = (s) => String(s || '').normalize('NFC').toLowerCase();
+    const words = norm(query).split(/\s+/).filter(Boolean);
+    const out = [];
+    for (const r of runs || []) {
+      for (const o of r.ops || []) {
+        const row = {
+          runId: r.id,
+          at: r.at,
+          source: r.source,
+          type: o.type,
+          name: o.name || baseName(o.fromLabel || ''),
+          fromLabel: o.fromLabel || '',
+          toLabel: o.toLabel || '',
+          fromDirLabel: o.fromDirLabel || '',
+          toDirLabel: o.toDirLabel || '',
+          from: o.from,
+          to: o.to || '',
+          undone: !!o.undone,
+        };
+        const hay = norm(`${row.name} ${row.fromLabel} ${row.toLabel}`);
+        if (words.every((w) => hay.includes(w))) out.push(row);
+      }
+    }
+    return out;
+  }
+
   return {
+    movedFiles,
     mergeConfig,
     resolvePath,
     baseName,

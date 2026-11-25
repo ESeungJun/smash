@@ -31,6 +31,7 @@ body { display: grid; place-items: start center; padding: 8px 32px 0; box-sizing
 .text { display: grid; min-width: 0; }
 .title { font-weight: 800; font-size: 16px; line-height: 22px; color: var(--accent); }
 .sub { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dest { color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .banner:hover .sub { color: var(--text); }
 /* 창이 뜨면서 웹뷰가 링크에 포커스를 줘서 파란 테두리가 생긴다. 배너는 마우스로만 누른다 */
 .banner:focus { outline: none; }
