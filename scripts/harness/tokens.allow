@@ -1,0 +1,13 @@
+# check-tokens.sh 예외. 한 줄에 경로 하나(글롭 가능, * 는 하위 폴더까지), # 뒤는 이유.
+# 토큰 원본 파일과, 손대지 않고 둘 기존 위반(기준선 + 이슈 번호)만 적는다.
+# 기존 위반은 `bash scripts/harness/check-tokens.sh --baseline` 으로 파일 단위로 한 번에 더한다.
+# 이 파일을 넓히면(예: * 한 줄) 검사가 통째로 꺼진다. PR 에서 이 파일이 바뀌면 꼭 본다.
+#
+# 스택이 처음부터 hex 색을 넣어 두는 자산(앱 리소스의 색 정의·아이콘 등)은 설치할 때 이 저장소 경로로 적는다.
+#
+# 예:
+# src/styles/tokens.css                 # 토큰 원본
+# src/legacy/*                          # 기준선, 이슈 #12
+src/renderer/nag.css  # 기준선 2026-11-25, 11곳(:root 토큰 원본 포함), #10
+src/renderer/smash.css  # 기준선 2026-11-25, 9곳, #10
+src/renderer/style.css  # 기준선 2026-11-25, 43곳(:root 토큰 원본 포함), #10
