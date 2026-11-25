@@ -141,6 +141,7 @@
     set('.tab[data-tab="history"]', 'History');
     set('.tab[data-tab="settings"]', 'Settings');
     set('#remove-target', 'Remove this folder from the list');
+    set('#reset-rules', 'Reset rules');
     set('#undo', 'Undo last run');
   }
 
@@ -171,7 +172,50 @@
 
   // 저장할 때마다 사이드바 폴더 목록을 다시 그린다
   root.SmashState.onSaved(() => renderTargets());
-  root.SmashApp = { renderTargets, selectTarget, addTarget, addTargetPath, removeTarget, switchTab };
+  // 규칙 초기화(#11): 한 번 누르면 무엇이 바뀌는지 알리고, 3초 안에 한 번 더 누르면 실행한다
+  let resetArmTimer = null;
+  function syncResetButton() {
+    const btn = $('#reset-rules');
+    const hint = $('#reset-rules-hint');
+    btn.textContent = state.resetArmed ? L('한 번 더 누르면 초기화해요', 'Click again to reset') : L('규칙 초기화', 'Reset rules');
+    btn.classList.toggle('armed', state.resetArmed);
+    hint.hidden = !state.resetArmed;
+    hint.textContent = L(
+      '정리할 폴더가 다운로드·문서 두 개와 기본 규칙으로 돌아가요. 파일·정리 기록·앱 설정은 그대로예요.',
+      'Your folders go back to Downloads and Documents with the default rules. Files, history and settings stay as they are.',
+    );
+  }
+
+  async function resetRules() {
+    if (!state.resetArmed) {
+      state.resetArmed = true;
+      syncResetButton();
+      clearTimeout(resetArmTimer);
+      resetArmTimer = setTimeout(() => {
+        state.resetArmed = false;
+        syncResetButton();
+      }, 3000);
+      return;
+    }
+    clearTimeout(resetArmTimer);
+    state.resetArmed = false;
+    syncResetButton();
+    try {
+      const { config, rev } = await tidy.resetRules();
+      adoptConfig(config, rev);
+      state.draft = null;
+      state.proposal = null;
+      state.targetId = config.targets[0]?.id || null;
+      toast(L('규칙을 처음 상태로 되돌렸어요. 다운로드·문서 폴더부터 다시 설정해 보세요.', 'Rules are back to the defaults. Start again from Downloads and Documents.'), 5000);
+      if (state.targetId) await selectTarget(state.targetId);
+      renderTargets();
+      renderRules();
+    } catch (err) {
+      toast(L(`초기화하지 못했어요: ${err.message}`, `Couldn't reset: ${err.message}`), 6000);
+    }
+  }
+
+  root.SmashApp = { renderTargets, selectTarget, addTarget, addTargetPath, removeTarget, resetRules, switchTab };
   root.SmashEvents.bind();
   init();
 })(window);

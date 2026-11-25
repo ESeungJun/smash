@@ -20,6 +20,7 @@
     draft: null, // 편집 중인 규칙
     proposal: null, // Claude가 만든 규칙 세트 { summary, changes, picked:Set }
     removeArmed: null, // 사이드바에서 빼기 확인을 기다리는 폴더 id
+    resetArmed: false, // 규칙 초기화 확인을 기다리는 중(#11)
     folders: [],
     integration: null,
     update: null,
