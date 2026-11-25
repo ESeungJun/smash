@@ -451,20 +451,33 @@ fn tidied_folder(cfg: &Config, ops: &[Op]) -> Option<PathBuf> {
     Some(common)
 }
 
-/// 폴더 표기: 홈 아래면 `~/` 를 떼어 짧게 쓴다(`Documents/사진·이미지`). 배너 한 줄에 들어가게.
-fn short_dir(p: &Path) -> String {
+/// 폴더 표기: 정리할 폴더 안이면 그 폴더 이름부터(`Documents/사진·이미지`), 아니면 홈 아래 경로.
+/// 배너 한 줄은 뒤가 잘리므로, 깊은 경로라도 정작 중요한 마지막 폴더가 앞쪽에 오게 한다.
+fn short_dir(p: &Path, roots: &[PathBuf]) -> String {
+    let root = roots.iter().filter(|r| p.starts_with(r)).max_by_key(|r| r.as_os_str().len());
+    if let Some(name) = root.and_then(|r| r.file_name()) {
+        let rest = p.strip_prefix(root.unwrap()).unwrap_or(p);
+        let mut parts = vec![name.to_string_lossy().into_owned()];
+        parts.extend(rest.components().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+        return parts.join("/");
+    }
     let s = contract_home(&p.to_string_lossy());
     s.strip_prefix("~/").map(str::to_string).unwrap_or(s)
 }
 
+/// 정리할 폴더들의 실제 경로(옮긴 곳 표기의 기준)
+fn target_roots(cfg: &Config) -> Vec<PathBuf> {
+    cfg.targets.iter().map(organizer::target_root).collect()
+}
+
 /// 옮긴 곳 요약(#10): 실제로 옮긴(되돌리지 않은) 파일이 어느 폴더로 몇 개 갔는지, 많은 순.
 /// 휴지통으로 보낸 것은 "휴지통" 한 칸. 같은 수면 먼저 나온 쪽이 앞.
-fn dest_summary(ops: &[Op]) -> Vec<(String, usize)> {
+fn dest_summary(ops: &[Op], roots: &[PathBuf]) -> Vec<(String, usize)> {
     let mut out: Vec<(String, usize)> = Vec::new();
     for o in ops.iter().filter(|o| !o.undone) {
         let key = if o.kind == "move" {
             match o.to.as_deref().and_then(|t| Path::new(t).parent()) {
-                Some(dir) => short_dir(dir),
+                Some(dir) => short_dir(dir, roots),
                 None => continue,
             }
         } else {
@@ -543,7 +556,8 @@ where
 /// 트레이의 "지금 전부 정리하기": 폴더가 여러 개여도 기록은 실행 하나로 남는다(한 번에 되돌릴 수 있게).
 async fn tidy_all_now(app: AppHandle) {
     let res = smash_and_apply(&app, None, |cfg| apply_all(cfg, "app")).await;
-    let dest = res.as_ref().ok().and_then(|r| r.run.as_ref()).map(|run| dest_line(&dest_summary(&run.ops))).unwrap_or_default();
+    let roots = target_roots(&cfg_or_default());
+    let dest = res.as_ref().ok().and_then(|r| r.run.as_ref()).map(|run| dest_line(&dest_summary(&run.ops, &roots))).unwrap_or_default();
     let total = res.map(|r| r.results.iter().filter(|x| x.ok).count()).unwrap_or(0);
     let _ = app.emit_to("main", "auto:ran", json!({ "count": total }));
     let title = if total > 0 {
@@ -624,7 +638,7 @@ fn on_auto_run(app: &AppHandle, target_id: &str, result: &Applied) {
     let where_ = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let n = ok.len();
     let sub = l(&format!("{where_}에서 {n}개 치웠어요 · {names}{more}"), &format!("Tidied {n} in {where_} · {names}{more}"));
-    let dest = result.run.as_ref().map(|r| dest_line(&dest_summary(&r.ops))).unwrap_or_default();
+    let dest = result.run.as_ref().map(|r| dest_line(&dest_summary(&r.ops, &target_roots(&cfg)))).unwrap_or_default();
     let handle = app.clone();
     let folder = folder.to_string_lossy().into_owned();
     let _ = app.run_on_main_thread(move || show_nag(&handle, auto_title(n), sub, dest, Some(NagAction::Folder(folder))));
@@ -1164,7 +1178,7 @@ async fn apply(app: AppHandle, items: Vec<Item>) -> Result<Value, String> {
     .await?;
     // 방금 옮긴 파일과 옮긴 곳(#10): 화면은 그리기만 한다
     let ops = res.run.as_ref().map(|r| r.ops.as_slice()).unwrap_or(&[]);
-    let (moved, dest) = (moved_list(ops), dest_line(&dest_summary(ops)));
+    let (moved, dest) = (moved_list(ops), dest_line(&dest_summary(ops, &target_roots(&cfg_or_default()))));
     let mut v = to_value(res)?;
     v["moved"] = moved;
     v["destLine"] = json!(dest);
@@ -1441,15 +1455,20 @@ mod tests {
         let trash = Op { kind: "trash".into(), from: p("Downloads/Setup.dmg"), ..Default::default() };
         let undone = Op { undone: true, ..mv("Documents/자료/c.pdf") };
         let ops = vec![mv("Documents/웨딩/a.pdf"), mv("Documents/사진/b.png"), mv("Documents/사진/c.png"), trash, undone];
-        let sum = dest_summary(&ops);
+        let sum = dest_summary(&ops, &[]);
         assert_eq!(sum, vec![("Documents/사진".into(), 2), ("Documents/웨딩".into(), 1), ("휴지통".into(), 1)], "되돌린 자료 폴더는 빠진다");
         assert_eq!(dest_line(&sum), "→ Documents/사진 2개 외 2곳", "배너 한 줄에 들어가게 가장 많이 간 곳 하나만");
         assert_eq!(dest_line(&sum[..2]), "→ Documents/사진 2개 외 1곳");
-        assert_eq!(dest_line(&dest_summary(&ops[..1])), "→ Documents/웨딩", "한 곳이면 개수 없이");
+        assert_eq!(dest_line(&dest_summary(&ops[..1], &[])), "→ Documents/웨딩", "한 곳이면 개수 없이");
+        // 정리할 폴더 안이면 그 폴더 이름부터: 깊은 경로라도 끝 폴더가 잘리지 않게
+        let deep = Op { kind: "move".into(), from: "/x/a".into(), to: Some(p("Work/qa/app/docs/사진/a.png")), ..Default::default() };
+        let roots = [home.join("Work/qa/app/docs"), home.join("Work")];
+        assert_eq!(dest_summary(&[deep.clone()], &roots)[0].0, "docs/사진", "가장 안쪽 정리 폴더 기준");
+        assert_eq!(dest_summary(&[deep], &[])[0].0, "Work/qa/app/docs/사진");
         assert_eq!(dest_line(&[]), "");
         // 홈 밖 경로는 그대로
         let outside = Op { kind: "move".into(), from: "/x/a".into(), to: Some("/Volumes/USB/자료/a".into()), ..Default::default() };
-        assert_eq!(dest_summary(&[outside])[0].0, "/Volumes/USB/자료");
+        assert_eq!(dest_summary(&[outside], &[])[0].0, "/Volumes/USB/자료");
         crate::lang::set_lang("en");
         assert_eq!(dest_line(&sum), "→ Documents/사진 (2) and 2 more");
         crate::lang::set_lang("ko");
