@@ -308,7 +308,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .match-line { background: var(--ground); border-radius: var(--radius-control); padding: 10px 12px; font-size: 13px; color: var(--muted); }
 .match-line b { color: var(--text); }
 .editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.danger-zone { margin-top: 24px; }
+.danger-zone { margin-top: 24px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.danger-zone .hint { flex-basis: 100%; margin: 0; }
 
 /* ---------- 자동 정리 · Claude ---------- */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 18px 20px; margin-bottom: 16px; }
@@ -430,3 +431,4 @@ details.run summary::-webkit-details-marker { display: none; }
   .file-row { grid-template-columns: 16px minmax(0, 1fr) auto; }
   .file-when { grid-column: 2; grid-row: 2; }
 }
+.danger-zone button.armed { border-color: var(--negative); font-weight: 600; }

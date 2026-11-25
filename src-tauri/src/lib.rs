@@ -1064,6 +1064,16 @@ fn config_save(app: AppHandle, cfg: Value) -> Result<Value, String> {
     Ok(json!({ "config": saved, "rev": rev }))
 }
 
+/// 규칙 초기화(#11): 정리할 폴더·규칙만 처음 설치한 상태로. 화면의 설정 합치기를 거치지 않는다
+/// (합치면 디스크에만 있던 규칙·폴더가 되살아난다).
+#[tauri::command]
+fn config_reset_rules(app: AppHandle) -> Result<Value, String> {
+    let saved = save_config(&config::reset_targets(&load_config()?))?;
+    let rev = remember_rev(&app);
+    apply_settings(&app, &saved);
+    Ok(json!({ "config": saved, "rev": rev }))
+}
+
 /// `shallow`: 하위 폴더까지 정리가 켜져 있어도 바로 아래 파일만 본다(자동 정리가 보는 범위).
 #[tauri::command]
 async fn scan(target_id: Option<String>, shallow: Option<bool>) -> Result<Value, String> {
@@ -1345,6 +1355,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             config_get,
             config_save,
+            config_reset_rules,
             scan,
             folders,
             rule_test,

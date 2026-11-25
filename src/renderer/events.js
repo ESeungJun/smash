@@ -47,6 +47,7 @@
         case 'toggle-all': return Preview.toggleAll();
         case 'add-target': return App.addTarget();
         case 'remove-target': return App.removeTarget(state.targetId);
+        case 'reset-rules': return App.resetRules();
         case 'ai-group': return Preview.aiGroupMedia();
         case 'proposal-save': return Rules.saveProposal();
         case 'proposal-cancel': return Rules.cancelProposal();
