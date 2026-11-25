@@ -465,9 +465,9 @@ fn short_dir(p: &Path, roots: &[PathBuf]) -> String {
     s.strip_prefix("~/").map(str::to_string).unwrap_or(s)
 }
 
-/// 정리할 폴더들의 실제 경로(옮긴 곳 표기의 기준)
-fn target_roots(cfg: &Config) -> Vec<PathBuf> {
-    cfg.targets.iter().map(organizer::target_root).collect()
+/// 휴지통 이름. 영어 윈도우는 Recycle Bin
+fn trash_word() -> String {
+    l("휴지통", if cfg!(windows) { "Recycle Bin" } else { "Trash" })
 }
 
 /// 옮긴 곳 요약(#10): 실제로 옮긴(되돌리지 않은) 파일이 어느 폴더로 몇 개 갔는지, 많은 순.
@@ -481,7 +481,7 @@ fn dest_summary(ops: &[Op], roots: &[PathBuf]) -> Vec<(String, usize)> {
                 None => continue,
             }
         } else {
-            l("휴지통", "Trash")
+            trash_word()
         };
         match out.iter_mut().find(|(k, _)| *k == key) {
             Some((_, n)) => *n += 1,
@@ -505,18 +505,24 @@ fn dest_line(summary: &[(String, usize)]) -> String {
     }
 }
 
-/// 화면에 넘기는 "방금 옮긴 파일" 목록(#10). 이름·옮긴 폴더 표기·Finder 에서 보여 줄 경로.
+/// 화면에 넘기는 기록 한 줄(#10). 기록 탭과 정리 결과 띠가 같은 모양을 쓴다(표기가 어긋나지 않게).
+/// 이름·원래 자리·옮긴 자리 표기. 휴지통으로 보낸 것은 `to` 를 비운다(화면은 휴지통이라고만 쓴다).
+fn op_view(o: &Op) -> Value {
+    let dir = |p: &str| Path::new(p).parent().map(|d| label(&d.to_string_lossy())).unwrap_or_default();
+    let to = if o.kind == "move" { o.to.clone().unwrap_or_default() } else { String::new() };
+    let mut v = json!(o);
+    v["name"] = json!(Path::new(&o.from).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+    v["fromLabel"] = json!(label(&o.from));
+    v["fromDirLabel"] = json!(dir(&o.from));
+    v["to"] = json!(to);
+    v["toLabel"] = json!(label(&to));
+    v["toDirLabel"] = json!(if to.is_empty() { String::new() } else { dir(&to) });
+    v
+}
+
+/// 정리 결과 띠의 "방금 옮긴 파일"(되돌린 것은 뺀다)
 fn moved_list(ops: &[Op]) -> Value {
-    json!(ops
-        .iter()
-        .filter(|o| !o.undone)
-        .map(|o| {
-            let name = Path::new(&o.from).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let to = if o.kind == "move" { o.to.clone().unwrap_or_default() } else { String::new() };
-            let dir = Path::new(&to).parent().map(|d| label(&d.to_string_lossy())).unwrap_or_default();
-            json!({ "type": o.kind, "name": name, "to": to, "toDirLabel": dir })
-        })
-        .collect::<Vec<_>>())
+    json!(ops.iter().filter(|o| !o.undone).map(op_view).collect::<Vec<_>>())
 }
 
 /// 효과를 띄우고, 손바닥이 내리치는 순간 정리한 뒤, 효과 창이 닫힌 다음에 폴더를 연다.
@@ -556,7 +562,7 @@ where
 /// 트레이의 "지금 전부 정리하기": 폴더가 여러 개여도 기록은 실행 하나로 남는다(한 번에 되돌릴 수 있게).
 async fn tidy_all_now(app: AppHandle) {
     let res = smash_and_apply(&app, None, |cfg| apply_all(cfg, "app")).await;
-    let roots = target_roots(&cfg_or_default());
+    let roots = organizer::target_roots(&cfg_or_default());
     let dest = res.as_ref().ok().and_then(|r| r.run.as_ref()).map(|run| dest_line(&dest_summary(&run.ops, &roots))).unwrap_or_default();
     let total = res.map(|r| r.results.iter().filter(|x| x.ok).count()).unwrap_or(0);
     let _ = app.emit_to("main", "auto:ran", json!({ "count": total }));
@@ -638,7 +644,7 @@ fn on_auto_run(app: &AppHandle, target_id: &str, result: &Applied) {
     let where_ = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let n = ok.len();
     let sub = l(&format!("{where_}에서 {n}개 치웠어요 · {names}{more}"), &format!("Tidied {n} in {where_} · {names}{more}"));
-    let dest = result.run.as_ref().map(|r| dest_line(&dest_summary(&r.ops, &target_roots(&cfg)))).unwrap_or_default();
+    let dest = result.run.as_ref().map(|r| dest_line(&dest_summary(&r.ops, &organizer::target_roots(&cfg)))).unwrap_or_default();
     let handle = app.clone();
     let folder = folder.to_string_lossy().into_owned();
     let _ = app.run_on_main_thread(move || show_nag(&handle, auto_title(n), sub, dest, Some(NagAction::Folder(folder))));
@@ -1178,7 +1184,7 @@ async fn apply(app: AppHandle, items: Vec<Item>) -> Result<Value, String> {
     .await?;
     // 방금 옮긴 파일과 옮긴 곳(#10): 화면은 그리기만 한다
     let ops = res.run.as_ref().map(|r| r.ops.as_slice()).unwrap_or(&[]);
-    let (moved, dest) = (moved_list(ops), dest_line(&dest_summary(ops, &target_roots(&cfg_or_default()))));
+    let (moved, dest) = (moved_list(ops), dest_line(&dest_summary(ops, &organizer::target_roots(&cfg_or_default()))));
     let mut v = to_value(res)?;
     v["moved"] = moved;
     v["destLine"] = json!(dest);
@@ -1213,17 +1219,7 @@ async fn history() -> Result<Value, String> {
                 v["ops"] = json!(r
                     .ops
                     .iter()
-                    .map(|o| {
-                        let mut ov = json!(o);
-                        ov["fromLabel"] = json!(label(&o.from));
-                        ov["toLabel"] = json!(label(o.to.as_deref().unwrap_or("")));
-                        ov["name"] = json!(Path::new(&o.from).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-                        // 기록 탭 "옮긴 파일" 보기의 원래 자리 → 옮긴 자리(#10)
-                        let dir = |p: &str| Path::new(p).parent().map(|d| label(&d.to_string_lossy())).unwrap_or_default();
-                        ov["fromDirLabel"] = json!(dir(&o.from));
-                        ov["toDirLabel"] = json!(o.to.as_deref().map(dir).unwrap_or_default());
-                        ov
-                    })
+                    .map(op_view)
                     .collect::<Vec<_>>());
                 v
             })
@@ -1491,6 +1487,8 @@ mod tests {
         assert_eq!(list[0]["toDirLabel"], "~/Documents/웨딩");
         assert_eq!(list[1]["type"], "trash");
         assert_eq!(list[1]["to"], "");
+        assert_eq!(list[1]["toDirLabel"], "", "휴지통은 옮긴 폴더 표기 없음");
+        assert_eq!(list[0]["fromDirLabel"], "~/Downloads");
     }
 
     #[test]

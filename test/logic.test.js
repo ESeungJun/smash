@@ -172,6 +172,7 @@ test('옮긴 파일 목록: 실행을 파일 한 줄씩 펴고, 이름·자리�
   assert.deepEqual(L.movedFiles(runs, 'SETUP').map((r) => r.name), ['Setup.dmg'], '대소문자 무시');
   assert.deepEqual(L.movedFiles(runs, '견적서'.normalize('NFD')).map((r) => r.name), ['견적서.pdf'], '자모 분리 한글도 찾음');
   assert.deepEqual(L.movedFiles(runs, 'documents 사진').map((r) => r.name), ['a.png'], '낱말 모두 들어가야');
+  assert.deepEqual(L.movedFiles(runs, '휴지통').map((r) => r.name), ['Setup.dmg'], '휴지통으로 보낸 것은 휴지통으로 찾기');
   assert.deepEqual(L.movedFiles(runs, '없는말'), []);
   assert.deepEqual(L.movedFiles(null), []);
 });

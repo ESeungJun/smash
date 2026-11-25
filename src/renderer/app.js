@@ -31,6 +31,7 @@
   }
 
   async function selectTarget(id) {
+    if (id !== state.targetId) state.lastResult = null; // 결과 띠는 그 폴더에서 방금 한 정리만
     state.targetId = id;
     state.draft = null;
     state.proposal = null;

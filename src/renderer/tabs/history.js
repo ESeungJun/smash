@@ -4,7 +4,7 @@
 // app.js(탭 전환)와 events.js(되돌리기·보기 전환·찾기·자동 정리 알림)가 window.SmashHistory 로 부른다.
 (function (root) {
   const { $, L, esc, reducedMotion, toast, ico } = root.SmashUI;
-  const { state, revealLabel } = root.SmashState;
+  const { state, revealLabel, trashLabel } = root.SmashState;
   const { doScan } = root.SmashPreview;
 
   // 보기와 찾는 말은 탭을 오가도 남는다. 처음은 "옮긴 파일"
@@ -35,7 +35,7 @@
   function fileRow(f) {
     const when = new Date(f.at).toLocaleString(L('ko-KR', 'en-US'), { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     const trash = f.type !== 'move';
-    const to = trash ? L('휴지통', 'Trash') : f.toDirLabel || f.toLabel;
+    const to = trash ? trashLabel() : f.toDirLabel || f.toLabel;
     // 되돌린 파일은 원래 자리에, 옮긴 파일은 옮긴 자리에 있다
     const here = f.undone ? f.from : trash ? '' : f.to;
     const show = here ? `<button class="ghost small" data-show-path="${esc(here)}">${revealLabel()}</button>` : '<span></span>';
@@ -140,6 +140,8 @@
     try {
       const res = await tidy.undo(runId);
       if (!res.ok) return toast(res.message);
+      // 방금 정리 결과 띠가 되돌린 실행을 가리키면 지운다(옮긴 자리에 더는 없다)
+      if (state.lastResult && (!runId || runId === state.lastResult.runId)) state.lastResult = null;
       // 스매시의 반대 동작: 손바닥으로 가볍게 쓰다듬는다
       if (!reducedMotion()) {
         const icon = $('.brand img');
