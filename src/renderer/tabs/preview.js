@@ -5,7 +5,7 @@
 // events.js(누름·체크)와 app.js(폴더 고르기)·다른 탭(저장 뒤 다시 스캔)이 window.SmashPreview 로 부른다.
 (function (root) {
   const { $, L, esc, reducedMotion, toast, fmtSize, ico } = root.SmashUI;
-  const { state, revealLabel, saveConfig, baseName, dirOf, expand, contract, targetName, cliReady, destText } = root.SmashState;
+  const { state, revealLabel, trashLabel, saveConfig, baseName, dirOf, expand, contract, targetName, cliReady, destText } = root.SmashState;
 
   async function doScan() {
     if (!state.targetId) return;
@@ -305,8 +305,8 @@
     const where =
       m.type === 'move'
         ? `<span class="dest" title="${esc(m.toDirLabel)}">→ ${esc(m.toDirLabel)}</span><button class="ghost small" data-show-path="${esc(m.to)}">${revealLabel()}</button>`
-        : `<span class="dest">→ ${L('휴지통', 'Trash')}</span><span></span>`;
-    return `<li class="plain-row moved-row"><span class="ficon">${ico('file')}</span><span class="fname" title="${esc(m.name)}">${esc(m.name)}</span>${where}</li>`;
+        : `<span class="dest">→ ${trashLabel()}</span><span></span>`;
+    return `<li class="plain-row moved-row"><span class="ficon">${ico(m.type === 'move' ? 'file' : 'trash')}</span><span class="fname" title="${esc(m.name)}">${esc(m.name)}</span>${where}</li>`;
   }
 
   function renderResult() {
@@ -430,10 +430,10 @@
     // 손바닥이 내리치는 순간에 맞은 행을 뺀다
     state.struckIds = items.map((it) => it.id);
     try {
-      const { results, historyError, moved, destLine } = await tidy.apply(items);
+      const { results, historyError, moved, destLine, run } = await tidy.apply(items);
       const ok = results.filter((r) => r.ok).length;
       const failed = SmashLogic.failures(results);
-      state.lastResult = { ok, failed, historyError: historyError || null, moved: moved || [], destLine: destLine || '' };
+      state.lastResult = { ok, failed, historyError: historyError || null, moved: moved || [], destLine: destLine || '', runId: run?.id || null };
       toast(
         failed.length
           ? L(`${ok}개 정리, ${failed.length}개는 그대로 있어요. 미리보기 위에서 이유를 볼 수 있어요.`, `Tidied ${ok}, ${failed.length} stayed put. See why above the preview.`)

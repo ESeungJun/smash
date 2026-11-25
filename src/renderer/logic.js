@@ -173,7 +173,8 @@
           to: o.to || '',
           undone: !!o.undone,
         };
-        const hay = norm(`${row.name} ${row.fromLabel} ${row.toLabel}`);
+        // 휴지통으로 보낸 것은 화면에 "→ 휴지통"이라고 보이므로 그 말로도 찾게
+        const hay = norm(`${row.name} ${row.fromLabel} ${row.toLabel}${row.type === 'move' ? '' : ' 휴지통 trash recycle bin'}`);
         if (words.every((w) => hay.includes(w))) out.push(row);
       }
     }
