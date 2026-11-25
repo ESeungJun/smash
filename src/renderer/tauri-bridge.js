@@ -28,6 +28,7 @@
   window.tidy = {
     getConfig: () => call('config_get'),
     saveConfig: (cfg) => call('config_save', { cfg }),
+    resetRules: () => call('config_reset_rules'),
     scan: (targetId, shallow = false) => call('scan', { targetId, shallow }),
     folders: () => call('folders'),
     testRule: (targetId, rule) => call('rule_test', { targetId, rule }),

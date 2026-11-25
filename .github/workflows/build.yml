@@ -30,6 +30,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      # 구현 하네스(code-harness): 규칙표 · 색 토큰 · 기능 지도 · 하네스 시험
+      - run: bash scripts/harness/check-rules.sh
+      - run: bash scripts/harness/check-tokens.sh
+      - run: bash scripts/harness/check-map.sh
+      - run: for t in scripts/harness/tests/*.test.sh; do bash "$t" || exit 1; done
       # 화면의 순수 계산(설정 합치기·목적지 판정·타격 세기)
       - run: node --test test/*.test.js
       # generate_context! 가 dist-web 을 읽는다

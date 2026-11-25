@@ -19,7 +19,10 @@
       const el = e.target.closest('button, [data-tab]');
       if (!el) return;
       if (el.dataset.tab) return App.switchTab(el.dataset.tab);
-      if (el.dataset.goto) return App.switchTab(el.dataset.goto);
+      if (el.dataset.goto) {
+        e.preventDefault(); // 접히는 줄(summary) 안 버튼이면 줄이 같이 접히지 않게
+        return App.switchTab(el.dataset.goto);
+      }
       if (el.dataset.url) return tidy.openUrl(el.dataset.url);
       if (el.classList.contains('target-btn')) return App.selectTarget(el.dataset.id);
       if (el.dataset.removeTarget) return App.removeTarget(el.dataset.removeTarget);
@@ -29,6 +32,11 @@
         return History.doUndo(el.dataset.undoRun);
       }
       if (el.dataset.addTargetPath) return App.addTargetPath(el.dataset.addTargetPath);
+      if (el.dataset.historyView) return History.setView(el.dataset.historyView);
+      if (el.dataset.showPath) {
+        e.preventDefault(); // 줄(details)이 같이 접히지 않게
+        return tidy.showInFolder(el.dataset.showPath).catch((err) => toast(L(`열지 못했어요: ${err.message}`, `Couldn't open it: ${err.message}`)));
+      }
       if (el.dataset.collapse) return Preview.toggleCollapse(el.dataset.collapse);
       if (state.draft && Rules.handleDraftClick(el)) return;
       const t = currentTarget();
@@ -42,6 +50,7 @@
         case 'toggle-all': return Preview.toggleAll();
         case 'add-target': return App.addTarget();
         case 'remove-target': return App.removeTarget(state.targetId);
+        case 'reset-rules': return App.resetRules();
         case 'ai-group': return Preview.aiGroupMedia();
         case 'proposal-save': return Rules.saveProposal();
         case 'proposal-cancel': return Rules.cancelProposal();
@@ -86,7 +95,10 @@
       if (Rules.isTagInput(el)) return Rules.tagKeydown(e);
     });
 
-    document.addEventListener('input', (e) => Rules.draftInput(e));
+    document.addEventListener('input', (e) => {
+      if (e.target.id === 'history-q') return History.search(e.target.value);
+      return Rules.draftInput(e);
+    });
 
     document.addEventListener('change', async (e) => {
       const el = e.target;

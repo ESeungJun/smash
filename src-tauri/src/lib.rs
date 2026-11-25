@@ -451,6 +451,80 @@ fn tidied_folder(cfg: &Config, ops: &[Op]) -> Option<PathBuf> {
     Some(common)
 }
 
+/// 폴더 표기: 정리할 폴더 안이면 그 폴더 이름부터(`Documents/사진·이미지`), 아니면 홈 아래 경로.
+/// 배너 한 줄은 뒤가 잘리므로, 깊은 경로라도 정작 중요한 마지막 폴더가 앞쪽에 오게 한다.
+fn short_dir(p: &Path, roots: &[PathBuf]) -> String {
+    let root = roots.iter().filter(|r| p.starts_with(r)).max_by_key(|r| r.as_os_str().len());
+    if let Some(name) = root.and_then(|r| r.file_name()) {
+        let rest = p.strip_prefix(root.unwrap()).unwrap_or(p);
+        let mut parts = vec![name.to_string_lossy().into_owned()];
+        parts.extend(rest.components().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+        return parts.join("/");
+    }
+    let s = contract_home(&p.to_string_lossy());
+    s.strip_prefix("~/").map(str::to_string).unwrap_or(s)
+}
+
+/// 휴지통 이름. 영어 윈도우는 Recycle Bin
+fn trash_word() -> String {
+    l("휴지통", if cfg!(windows) { "Recycle Bin" } else { "Trash" })
+}
+
+/// 옮긴 곳 요약(#10): 실제로 옮긴(되돌리지 않은) 파일이 어느 폴더로 몇 개 갔는지, 많은 순.
+/// 휴지통으로 보낸 것은 "휴지통" 한 칸. 같은 수면 먼저 나온 쪽이 앞.
+fn dest_summary(ops: &[Op], roots: &[PathBuf]) -> Vec<(String, usize)> {
+    let mut out: Vec<(String, usize)> = Vec::new();
+    for o in ops.iter().filter(|o| !o.undone) {
+        let key = if o.kind == "move" {
+            match o.to.as_deref().and_then(|t| Path::new(t).parent()) {
+                Some(dir) => short_dir(dir, roots),
+                None => continue,
+            }
+        } else {
+            trash_word()
+        };
+        match out.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, n)) => *n += 1,
+            None => out.push((key, 1)),
+        }
+    }
+    out.sort_by(|a, b| b.1.cmp(&a.1)); // 안정 정렬: 같은 수는 처음 순서 그대로
+    out
+}
+
+/// 배너·알림에 붙이는 한 줄: 가장 많이 간 폴더 하나와 나머지 곳 수(`→ Documents/사진 2개 외 2곳`).
+/// 배너는 한 줄이라 긴 경로를 여럿 늘어놓으면 잘린다. 한 곳이면 개수 없이 폴더만.
+fn dest_line(summary: &[(String, usize)]) -> String {
+    match summary {
+        [] => String::new(),
+        [(only, _)] => format!("→ {only}"),
+        [(top, n), rest @ ..] => {
+            let k = rest.len();
+            l(&format!("→ {top} {n}개 외 {k}곳"), &format!("→ {top} ({n}) and {k} more"))
+        }
+    }
+}
+
+/// 화면에 넘기는 기록 한 줄(#10). 기록 탭과 정리 결과 띠가 같은 모양을 쓴다(표기가 어긋나지 않게).
+/// 이름·원래 자리·옮긴 자리 표기. 휴지통으로 보낸 것은 `to` 를 비운다(화면은 휴지통이라고만 쓴다).
+fn op_view(o: &Op) -> Value {
+    let dir = |p: &str| Path::new(p).parent().map(|d| label(&d.to_string_lossy())).unwrap_or_default();
+    let to = if o.kind == "move" { o.to.clone().unwrap_or_default() } else { String::new() };
+    let mut v = json!(o);
+    v["name"] = json!(Path::new(&o.from).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+    v["fromLabel"] = json!(label(&o.from));
+    v["fromDirLabel"] = json!(dir(&o.from));
+    v["to"] = json!(to);
+    v["toLabel"] = json!(label(&to));
+    v["toDirLabel"] = json!(if to.is_empty() { String::new() } else { dir(&to) });
+    v
+}
+
+/// 정리 결과 띠의 "방금 옮긴 파일"(되돌린 것은 뺀다)
+fn moved_list(ops: &[Op]) -> Value {
+    json!(ops.iter().filter(|o| !o.undone).map(op_view).collect::<Vec<_>>())
+}
+
 /// 효과를 띄우고, 손바닥이 내리치는 순간 정리한 뒤, 효과 창이 닫힌 다음에 폴더를 연다.
 /// `count` 는 치울 파일 수(세기를 정한다). 모르면 None.
 async fn smash_and_apply<F>(app: &AppHandle, count: Option<usize>, plan: F) -> Result<Applied, String>
@@ -488,6 +562,8 @@ where
 /// 트레이의 "지금 전부 정리하기": 폴더가 여러 개여도 기록은 실행 하나로 남는다(한 번에 되돌릴 수 있게).
 async fn tidy_all_now(app: AppHandle) {
     let res = smash_and_apply(&app, None, |cfg| apply_all(cfg, "app")).await;
+    let roots = organizer::target_roots(&cfg_or_default());
+    let dest = res.as_ref().ok().and_then(|r| r.run.as_ref()).map(|run| dest_line(&dest_summary(&run.ops, &roots))).unwrap_or_default();
     let total = res.map(|r| r.results.iter().filter(|x| x.ok).count()).unwrap_or(0);
     let _ = app.emit_to("main", "auto:ran", json!({ "count": total }));
     let title = if total > 0 {
@@ -495,14 +571,20 @@ async fn tidy_all_now(app: AppHandle) {
     } else {
         l("치울 게 없네요. 깨끗해요!", "Nothing to tidy. All clean!")
     };
-    let _ = app.notification().builder().title(title).show();
+    let mut note = app.notification().builder().title(title);
+    // 어디로 갔는지(#10)
+    if total > 0 && !dest.is_empty() {
+        note = note.body(dest);
+    }
+    let _ = note.show();
 }
 
 // ── 잔소리 배너 ───────────────────────────────────────
 // 시스템 알림은 권한에 따라 안 뜰 때가 있어서, 화면 위쪽 가운데에 투명 창으로 직접 띄운다.
 // 누르면 정리한 폴더(또는 미리보기·기록)를 연다. 4.5초 뒤 저절로 사라지고, 마우스를 올리면 멈춘다.
 
-fn show_nag(app: &AppHandle, title: String, sub: String, action: Option<NagAction>) {
+/// `dest`: 옮긴 곳 한 줄(#10). 비면 배너에 그 줄이 없다.
+fn show_nag(app: &AppHandle, title: String, sub: String, dest: String, action: Option<NagAction>) {
     if let Some(old) = app.get_webview_window("nag") {
         let _ = old.destroy();
     }
@@ -512,9 +594,9 @@ fn show_nag(app: &AppHandle, title: String, sub: String, action: Option<NagActio
         .ok()
         .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
         .or_else(|| app.primary_monitor().ok().flatten());
-    // 카드(436×70)에 그림자가 잘리지 않을 만큼 여백을 둔 투명 창
-    let (width, height) = (500.0, 130.0);
-    let url = format!("renderer/nag.html?title={}&sub={}&lang={}", enc(&title), enc(&sub), get_lang());
+    // 카드(436×70, 목적지 줄이 있으면 90)에 그림자가 잘리지 않을 만큼 여백을 둔 투명 창
+    let (width, height) = (500.0, if dest.is_empty() { 130.0 } else { 150.0 });
+    let url = format!("renderer/nag.html?title={}&sub={}&dest={}&lang={}", enc(&title), enc(&sub), enc(&dest), get_lang());
     let handle = app.clone();
     let mut builder = overlay(app, "nag", url, move || {
         if let Some(w) = handle.get_webview_window("nag") {
@@ -562,9 +644,10 @@ fn on_auto_run(app: &AppHandle, target_id: &str, result: &Applied) {
     let where_ = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let n = ok.len();
     let sub = l(&format!("{where_}에서 {n}개 치웠어요 · {names}{more}"), &format!("Tidied {n} in {where_} · {names}{more}"));
+    let dest = result.run.as_ref().map(|r| dest_line(&dest_summary(&r.ops, &organizer::target_roots(&cfg)))).unwrap_or_default();
     let handle = app.clone();
     let folder = folder.to_string_lossy().into_owned();
-    let _ = app.run_on_main_thread(move || show_nag(&handle, auto_title(n), sub, Some(NagAction::Folder(folder))));
+    let _ = app.run_on_main_thread(move || show_nag(&handle, auto_title(n), sub, dest, Some(NagAction::Folder(folder))));
 }
 
 // ── 치우기 전 잔소리, 주간 성적표 ─────────────────────
@@ -671,7 +754,7 @@ fn on_sweep(app: &AppHandle) {
     }
     if let Some((title, sub, action)) = banner {
         let handle = app.clone();
-        let _ = app.run_on_main_thread(move || show_nag(&handle, title, sub, Some(action)));
+        let _ = app.run_on_main_thread(move || show_nag(&handle, title, sub, String::new(), Some(action)));
     }
 }
 
@@ -1001,6 +1084,16 @@ fn config_save(app: AppHandle, cfg: Value) -> Result<Value, String> {
     Ok(json!({ "config": saved, "rev": rev }))
 }
 
+/// 규칙 초기화(#11): 정리할 폴더·규칙만 처음 설치한 상태로. 화면의 설정 합치기를 거치지 않는다
+/// (합치면 디스크에만 있던 규칙·폴더가 되살아난다).
+#[tauri::command]
+fn config_reset_rules(app: AppHandle) -> Result<Value, String> {
+    let saved = save_config(&config::reset_targets(&load_config()?))?;
+    let rev = remember_rev(&app);
+    apply_settings(&app, &saved);
+    Ok(json!({ "config": saved, "rev": rev }))
+}
+
 /// `shallow`: 하위 폴더까지 정리가 켜져 있어도 바로 아래 파일만 본다(자동 정리가 보는 범위).
 #[tauri::command]
 async fn scan(target_id: Option<String>, shallow: Option<bool>) -> Result<Value, String> {
@@ -1089,7 +1182,13 @@ async fn apply(app: AppHandle, items: Vec<Item>) -> Result<Value, String> {
         Applied { results, run, history_error }
     })
     .await?;
-    to_value(res)
+    // 방금 옮긴 파일과 옮긴 곳(#10): 화면은 그리기만 한다
+    let ops = res.run.as_ref().map(|r| r.ops.as_slice()).unwrap_or(&[]);
+    let (moved, dest) = (moved_list(ops), dest_line(&dest_summary(ops, &organizer::target_roots(&cfg_or_default()))));
+    let mut v = to_value(res)?;
+    v["moved"] = moved;
+    v["destLine"] = json!(dest);
+    Ok(v)
 }
 
 /// `run_id` 가 없으면 아직 돌릴 것이 남은 가장 최근 실행을 되돌린다.
@@ -1120,12 +1219,7 @@ async fn history() -> Result<Value, String> {
                 v["ops"] = json!(r
                     .ops
                     .iter()
-                    .map(|o| {
-                        let mut ov = json!(o);
-                        ov["fromLabel"] = json!(label(&o.from));
-                        ov["toLabel"] = json!(label(o.to.as_deref().unwrap_or("")));
-                        ov
-                    })
+                    .map(op_view)
                     .collect::<Vec<_>>());
                 v
             })
@@ -1270,6 +1364,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             config_get,
             config_save,
+            config_reset_rules,
             scan,
             folders,
             rule_test,
@@ -1343,6 +1438,57 @@ mod tests {
         for n in [1, 3, 5, 19, 20, 500] {
             assert_eq!(auto_title(n), "으이구!! 폴더 청소 좀 하랬지!!", "{n}개");
         }
+    }
+
+    /// 옮긴 곳 요약: 폴더별 개수(많은 순), 휴지통 한 칸, 되돌린 것 빼기, 세 곳 이상은 줄임(#10)
+    #[test]
+    fn dest_summary_groups_by_folder() {
+        let _g = crate::test_util::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::lang::set_lang("ko");
+        let home = config::home();
+        let p = |rel: &str| home.join(rel).to_string_lossy().into_owned();
+        let mv = |to: &str| Op { kind: "move".into(), from: p("Downloads/x"), to: Some(p(to)), ..Default::default() };
+        let trash = Op { kind: "trash".into(), from: p("Downloads/Setup.dmg"), ..Default::default() };
+        let undone = Op { undone: true, ..mv("Documents/자료/c.pdf") };
+        let ops = vec![mv("Documents/웨딩/a.pdf"), mv("Documents/사진/b.png"), mv("Documents/사진/c.png"), trash, undone];
+        let sum = dest_summary(&ops, &[]);
+        assert_eq!(sum, vec![("Documents/사진".into(), 2), ("Documents/웨딩".into(), 1), ("휴지통".into(), 1)], "되돌린 자료 폴더는 빠진다");
+        assert_eq!(dest_line(&sum), "→ Documents/사진 2개 외 2곳", "배너 한 줄에 들어가게 가장 많이 간 곳 하나만");
+        assert_eq!(dest_line(&sum[..2]), "→ Documents/사진 2개 외 1곳");
+        assert_eq!(dest_line(&dest_summary(&ops[..1], &[])), "→ Documents/웨딩", "한 곳이면 개수 없이");
+        // 정리할 폴더 안이면 그 폴더 이름부터: 깊은 경로라도 끝 폴더가 잘리지 않게
+        let deep = Op { kind: "move".into(), from: "/x/a".into(), to: Some(p("Work/qa/app/docs/사진/a.png")), ..Default::default() };
+        let roots = [home.join("Work/qa/app/docs"), home.join("Work")];
+        assert_eq!(dest_summary(&[deep.clone()], &roots)[0].0, "docs/사진", "가장 안쪽 정리 폴더 기준");
+        assert_eq!(dest_summary(&[deep], &[])[0].0, "Work/qa/app/docs/사진");
+        assert_eq!(dest_line(&[]), "");
+        // 홈 밖 경로는 그대로
+        let outside = Op { kind: "move".into(), from: "/x/a".into(), to: Some("/Volumes/USB/자료/a".into()), ..Default::default() };
+        assert_eq!(dest_summary(&[outside], &[])[0].0, "/Volumes/USB/자료");
+        crate::lang::set_lang("en");
+        assert_eq!(dest_line(&sum), "→ Documents/사진 (2) and 2 more");
+        crate::lang::set_lang("ko");
+    }
+
+    /// 화면에 넘기는 방금 옮긴 파일: 이름·옮긴 폴더, 되돌린 것은 빠짐(#10)
+    #[test]
+    fn moved_list_names_and_folders() {
+        let home = config::home();
+        let p = |rel: &str| home.join(rel).to_string_lossy().into_owned();
+        let ops = vec![
+            Op { kind: "move".into(), from: p("Downloads/견적서.pdf"), to: Some(p("Documents/웨딩/견적서.pdf")), ..Default::default() },
+            Op { kind: "trash".into(), from: p("Downloads/Setup.dmg"), ..Default::default() },
+            Op { kind: "move".into(), from: p("Downloads/b.pdf"), to: Some(p("Documents/b.pdf")), undone: true, ..Default::default() },
+        ];
+        let v = moved_list(&ops);
+        let list = v.as_array().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0]["name"], "견적서.pdf");
+        assert_eq!(list[0]["toDirLabel"], "~/Documents/웨딩");
+        assert_eq!(list[1]["type"], "trash");
+        assert_eq!(list[1]["to"], "");
+        assert_eq!(list[1]["toDirLabel"], "", "휴지통은 옮긴 폴더 표기 없음");
+        assert_eq!(list[0]["fromDirLabel"], "~/Downloads");
     }
 
     #[test]

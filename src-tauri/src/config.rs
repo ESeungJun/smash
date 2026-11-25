@@ -354,6 +354,12 @@ pub fn default_config() -> Config {
     }
 }
 
+/// 규칙 초기화(#11): 정리할 폴더와 규칙만 처음 설치한 상태(다운로드 → 문서 연결, 기본 규칙)로 되돌린다.
+/// 앱 설정·건너뛸 파일·Claude 설정은 그대로 둔다. 파일과 정리 기록은 여기서 건드리지 않는다.
+pub fn reset_targets(cfg: &Config) -> Config {
+    Config { targets: default_config().targets, ..cfg.clone() }
+}
+
 // ── 느슨하게 읽기 (JS 의 Number(x) || 기본값, x !== false 같은 규칙을 그대로) ──
 
 fn js_number(v: Option<&Value>) -> f64 {
@@ -572,6 +578,28 @@ mod tests {
         assert_eq!(l("한국어", "English"), "English");
         set_lang("ko");
         assert!(default_config().targets[1].rules.iter().any(|r| r.dest == "사진·이미지"));
+    }
+
+    #[test]
+    fn reset_targets_keeps_settings() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_lang("ko");
+        let mut cfg = default_config();
+        cfg.targets.push(Target { id: "desk".into(), path: "~/Desktop".into(), auto: true, rules: vec![], recursive: true, link: "documents".into(), auto_trash: false });
+        cfg.targets[0].auto = true;
+        cfg.targets[1].rules.clear();
+        cfg.settings.sound = false;
+        cfg.settings.language = "en".into();
+        cfg.skip.patterns.push("*.bak".into());
+        cfg.ai.vision = true;
+        let out = reset_targets(&cfg);
+        let ids: Vec<_> = out.targets.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["downloads", "documents"], "추가한 폴더는 빠지고 처음 두 폴더만");
+        assert!(out.targets.iter().all(|t| !t.auto), "자동 정리도 처음처럼 꺼짐");
+        assert_eq!(out.targets[1].rules.len(), default_config().targets[1].rules.len(), "기본 규칙이 돌아옴");
+        assert_eq!(out.targets[0].link, "documents");
+        assert!(!out.settings.sound && out.settings.language == "en", "앱 설정은 그대로");
+        assert!(out.skip.patterns.contains(&"*.bak".to_string()) && out.ai.vision, "건너뛸 파일·Claude 설정도 그대로");
     }
 
     #[test]
