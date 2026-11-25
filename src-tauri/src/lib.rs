@@ -1164,11 +1164,10 @@ async fn apply(app: AppHandle, items: Vec<Item>) -> Result<Value, String> {
     .await?;
     // 방금 옮긴 파일과 옮긴 곳(#10): 화면은 그리기만 한다
     let ops = res.run.as_ref().map(|r| r.ops.as_slice()).unwrap_or(&[]);
-    let (moved, dests) = (moved_list(ops), dest_summary(ops));
-    // dests 는 destLine 만 쓴다
+    let (moved, dest) = (moved_list(ops), dest_line(&dest_summary(ops)));
     let mut v = to_value(res)?;
     v["moved"] = moved;
-    v["destLine"] = json!(dest_line(&dests));
+    v["destLine"] = json!(dest);
     Ok(v)
 }
 

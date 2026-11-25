@@ -5,7 +5,7 @@
 // events.js(누름·체크)와 app.js(폴더 고르기)·다른 탭(저장 뒤 다시 스캔)이 window.SmashPreview 로 부른다.
 (function (root) {
   const { $, L, esc, reducedMotion, toast, fmtSize, ico } = root.SmashUI;
-  const { state, saveConfig, baseName, dirOf, expand, contract, targetName, cliReady, destText } = root.SmashState;
+  const { state, revealLabel, saveConfig, baseName, dirOf, expand, contract, targetName, cliReady, destText } = root.SmashState;
 
   async function doScan() {
     if (!state.targetId) return;
@@ -304,7 +304,7 @@
   function movedRow(m) {
     const where =
       m.type === 'move'
-        ? `<span class="dest" title="${esc(m.toDirLabel)}">→ ${esc(m.toDirLabel)}</span><button class="ghost small" data-show-path="${esc(m.to)}">${L('Finder에서 보기', 'Show in Finder')}</button>`
+        ? `<span class="dest" title="${esc(m.toDirLabel)}">→ ${esc(m.toDirLabel)}</span><button class="ghost small" data-show-path="${esc(m.to)}">${revealLabel()}</button>`
         : `<span class="dest">→ ${L('휴지통', 'Trash')}</span><span></span>`;
     return `<li class="plain-row moved-row"><span class="ficon">${ico('file')}</span><span class="fname" title="${esc(m.name)}">${esc(m.name)}</span>${where}</li>`;
   }

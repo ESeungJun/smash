@@ -19,7 +19,10 @@
       const el = e.target.closest('button, [data-tab]');
       if (!el) return;
       if (el.dataset.tab) return App.switchTab(el.dataset.tab);
-      if (el.dataset.goto) return App.switchTab(el.dataset.goto);
+      if (el.dataset.goto) {
+        e.preventDefault(); // 접히는 줄(summary) 안 버튼이면 줄이 같이 접히지 않게
+        return App.switchTab(el.dataset.goto);
+      }
       if (el.dataset.url) return tidy.openUrl(el.dataset.url);
       if (el.classList.contains('target-btn')) return App.selectTarget(el.dataset.id);
       if (el.dataset.removeTarget) return App.removeTarget(el.dataset.removeTarget);

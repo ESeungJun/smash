@@ -4,7 +4,7 @@
 // app.js(탭 전환)와 events.js(되돌리기·보기 전환·찾기·자동 정리 알림)가 window.SmashHistory 로 부른다.
 (function (root) {
   const { $, L, esc, reducedMotion, toast, ico } = root.SmashUI;
-  const { state } = root.SmashState;
+  const { state, revealLabel } = root.SmashState;
   const { doScan } = root.SmashPreview;
 
   // 보기와 찾는 말은 탭을 오가도 남는다. 처음은 "옮긴 파일"
@@ -25,7 +25,11 @@
       view === 'files'
         ? `<input id="history-q" type="search" class="history-q" value="${esc(query)}" placeholder="${L('파일 이름이나 폴더로 찾기', 'Find by file name or folder')}" aria-label="${L('옮긴 파일 찾기', 'Find moved files')}" />`
         : '';
-    $('#history-tools').innerHTML = runs.length ? seg + search : '';
+    // 찾는 중에 자동 정리로 기록을 다시 그려도 입력칸(글자·커서)은 그대로 둔다
+    const box = $('#history-tools');
+    if (runs.length && box.dataset.view === view && box.childElementCount) return;
+    box.dataset.view = runs.length ? view : '';
+    box.innerHTML = runs.length ? seg + search : '';
   }
 
   function fileRow(f) {
@@ -34,7 +38,7 @@
     const to = trash ? L('휴지통', 'Trash') : f.toDirLabel || f.toLabel;
     // 되돌린 파일은 원래 자리에, 옮긴 파일은 옮긴 자리에 있다
     const here = f.undone ? f.from : trash ? '' : f.to;
-    const show = here ? `<button class="ghost small" data-show-path="${esc(here)}">${L('Finder에서 보기', 'Show in Finder')}</button>` : '<span></span>';
+    const show = here ? `<button class="ghost small" data-show-path="${esc(here)}">${revealLabel()}</button>` : '<span></span>';
     return `<li class="file-row ${f.undone ? 'op-undone' : ''}">
       <span class="ficon">${ico(trash ? 'trash' : 'file')}</span>
       <span class="file-main">

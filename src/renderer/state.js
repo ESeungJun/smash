@@ -82,8 +82,15 @@
     return !t || SmashLogic.destInsideTargets(dest, t.path, state.config.targets, state.home, state.sep);
   }
 
+  // "Finder에서 보기" 버튼 글자(#10). 윈도우는 탐색기
+  function revealLabel() {
+    const { L } = root.SmashUI;
+    return state.platform === 'darwin' ? L('Finder에서 보기', 'Show in Finder') : L('탐색기에서 보기', 'Show in Explorer');
+  }
+
   root.SmashState = {
     state,
+    revealLabel,
     adoptConfig,
     onSaved,
     saveConfig,
